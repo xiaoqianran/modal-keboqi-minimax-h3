@@ -6,6 +6,7 @@ import {
   cancelH3InputUpscale,
   enhanceH3Prompt,
   generateH3Advanced,
+  saveH3ImageFrames,
   studioCatalog,
   upscaleH3InputImages,
 } from "../api/h3Client";
@@ -18,6 +19,8 @@ import type {
 
 const SAMPLE_PROMPT =
   "A quiet Japanese station at sunset, warm platform lights, cinematic tracking shot, natural motion, stereo ambience.";
+
+type H3UiUpdate = H3GenerateUpdate & { imageFramePaths?: string[] };
 
 function initialRequest(catalog: H3Catalog): H3AdvancedRequest {
   const d = catalog.defaults;
@@ -92,12 +95,7 @@ function initialRequest(catalog: H3Catalog): H3AdvancedRequest {
   };
 }
 
-function SelectControl({
-  label,
-  value,
-  options,
-  onChange,
-}: {
+function SelectControl({ label, value, options, onChange }: {
   label: string;
   value: string;
   options: string[];
@@ -113,14 +111,7 @@ function SelectControl({
   );
 }
 
-function NumberControl({
-  label,
-  value,
-  onChange,
-  min,
-  max,
-  step = 1,
-}: {
+function NumberControl({ label, value, onChange, min, max, step = 1 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
@@ -136,11 +127,7 @@ function NumberControl({
   );
 }
 
-function ToggleControl({
-  label,
-  checked,
-  onChange,
-}: {
+function ToggleControl({ label, checked, onChange }: {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -165,13 +152,7 @@ function mediaName(file: MediaInput): string {
   }
 }
 
-function MediaSlot({
-  label,
-  accept,
-  file,
-  onChange,
-  imagePreview = false,
-}: {
+function MediaSlot({ label, accept, file, onChange, imagePreview = false }: {
   label: string;
   accept: string;
   file: MediaInput;
@@ -215,10 +196,26 @@ function OutputWorkspace({
   update,
   running,
   resultFormat,
+  selectedImageFrames,
+  onToggleImageFrame,
+  onSelectAllImageFrames,
+  onClearImageFrames,
+  onSaveImageFrames,
+  savingImageFrames,
+  imageSaveStatus,
+  savedImageFiles,
 }: {
-  update: H3GenerateUpdate;
+  update: H3UiUpdate;
   running: boolean;
   resultFormat: string;
+  selectedImageFrames: number[];
+  onToggleImageFrame: (index: number) => void;
+  onSelectAllImageFrames: () => void;
+  onClearImageFrames: () => void;
+  onSaveImageFrames: () => void;
+  savingImageFrames: boolean;
+  imageSaveStatus: string;
+  savedImageFiles: string[];
 }) {
   return (
     <section className="panel h3-output-panel">
@@ -242,13 +239,29 @@ function OutputWorkspace({
       )}
 
       {resultFormat === "Image" && (
-        <div className="h3-image-results">
-          {update.images.length ? update.images.map((url, index) => (
-            <a href={url} key={`${url}-${index}`} className="h3-image-card" target="_blank" rel="noreferrer"><img src={url} alt={`H3 frame ${index + 1}`} /><span>Frame {index + 1}</span></a>
-          )) : (
-            <div className="empty-state h3-output-empty"><strong>{running ? "Decoding image frames…" : "No images yet"}</strong><span>Decoded H3 frames will appear as a visual grid.</span></div>
+        <>
+          <div className="h3-image-results">
+            {update.images.length ? update.images.map((url, index) => (
+              <div key={`${url}-${index}`} className={`h3-image-card ${selectedImageFrames.includes(index) ? "selected" : ""}`}>
+                <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={`H3 frame ${index + 1}`} /></a>
+                <label className="h3-image-select"><input type="checkbox" checked={selectedImageFrames.includes(index)} onChange={() => onToggleImageFrame(index)} /><span>Frame {index + 1}</span></label>
+              </div>
+            )) : (
+              <div className="empty-state h3-output-empty"><strong>{running ? "Decoding image frames…" : "No images yet"}</strong><span>Decoded H3 frames will appear as a visual grid.</span></div>
+            )}
+          </div>
+          {update.images.length > 0 && (
+            <div className="h3-image-save-panel">
+              <div className="button-row h3-image-save-actions">
+                <button className="secondary-button" onClick={onSelectAllImageFrames}>Select all</button>
+                <button className="secondary-button" disabled={!selectedImageFrames.length} onClick={onClearImageFrames}>Clear</button>
+                <button className="primary-button" disabled={!selectedImageFrames.length || savingImageFrames || !(update.imageFramePaths?.length)} onClick={onSaveImageFrames}>{savingImageFrames ? "Saving…" : `Save selected (${selectedImageFrames.length})`}</button>
+              </div>
+              {imageSaveStatus && <div className="notice compact">{imageSaveStatus}</div>}
+              {savedImageFiles.length > 0 && <div className="h3-saved-image-links">{savedImageFiles.map((url, index) => <a key={`${url}-${index}`} href={url}>Saved frame {index + 1}</a>)}</div>}
+            </div>
           )}
-        </div>
+        </>
       )}
 
       {resultFormat === "Audio" && (
@@ -270,9 +283,13 @@ export function CreateView() {
   const catalog = catalogQuery.data?.h3;
   const [request, setRequest] = useState<H3AdvancedRequest | null>(null);
   const [running, setRunning] = useState(false);
-  const [update, setUpdate] = useState<H3GenerateUpdate>({ videos: [], images: [], audioUrl: "", status: "Ready" });
+  const [update, setUpdate] = useState<H3UiUpdate>({ videos: [], images: [], audioUrl: "", status: "Ready", imageFramePaths: [] });
   const [error, setError] = useState("");
   const controllerRef = useRef<AbortController | null>(null);
+  const [selectedImageFrames, setSelectedImageFrames] = useState<number[]>([]);
+  const [savingImageFrames, setSavingImageFrames] = useState(false);
+  const [imageSaveStatus, setImageSaveStatus] = useState("");
+  const [savedImageFiles, setSavedImageFiles] = useState<string[]>([]);
 
   const [writerBackend, setWriterBackend] = useState("");
   const [localWriterModel, setLocalWriterModel] = useState("");
@@ -344,7 +361,7 @@ export function CreateView() {
   const usesEasyCache = request.cacheMode === "EasyCache";
   const postprocessActive = request.postprocess !== "None";
   const ltxPostprocess = request.postprocess.toLowerCase().includes("ltx");
-  const busy = running || enhancing || inputUpscaling;
+  const busy = running || enhancing || inputUpscaling || savingImageFrames;
 
   const validationError = (() => {
     if (!request.prompt.trim()) return "Prompt is required.";
@@ -369,7 +386,10 @@ export function CreateView() {
     controllerRef.current = controller;
     setRunning(true);
     setError("");
-    setUpdate({ videos: [], images: [], audioUrl: "", status: "Submitting H3 job" });
+    setSelectedImageFrames([]);
+    setImageSaveStatus("");
+    setSavedImageFiles([]);
+    setUpdate({ videos: [], images: [], audioUrl: "", status: "Submitting H3 job", imageFramePaths: [] });
     try {
       const final = await generateH3Advanced(request, setUpdate, controller.signal);
       setUpdate(final);
@@ -388,6 +408,25 @@ export function CreateView() {
       setUpdate((current) => ({ ...current, status: message }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const saveSelectedImageFrames = async () => {
+    const paths = update.imageFramePaths ?? [];
+    if (!paths.length || !selectedImageFrames.length || savingImageFrames) return;
+    setSavingImageFrames(true);
+    setError("");
+    setImageSaveStatus("Saving selected H3 image frames…");
+    try {
+      const labels = [...selectedImageFrames].sort((a, b) => a - b).map((index) => `Frame ${index + 1}`);
+      const result = await saveH3ImageFrames(paths, labels);
+      setSavedImageFiles(result.files);
+      setImageSaveStatus(result.status || `${labels.length} frame(s) saved.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setImageSaveStatus("");
+    } finally {
+      setSavingImageFrames(false);
     }
   };
 
@@ -708,7 +747,19 @@ export function CreateView() {
           {error && !validationError && <div className="error-text">{error}</div>}
         </section>
 
-        <OutputWorkspace update={update} running={running} resultFormat={request.resultFormat} />
+        <OutputWorkspace
+          update={update}
+          running={running}
+          resultFormat={request.resultFormat}
+          selectedImageFrames={selectedImageFrames}
+          onToggleImageFrame={(index) => setSelectedImageFrames((current) => current.includes(index) ? current.filter((value) => value !== index) : [...current, index])}
+          onSelectAllImageFrames={() => setSelectedImageFrames(update.images.map((_, index) => index))}
+          onClearImageFrames={() => setSelectedImageFrames([])}
+          onSaveImageFrames={saveSelectedImageFrames}
+          savingImageFrames={savingImageFrames}
+          imageSaveStatus={imageSaveStatus}
+          savedImageFiles={savedImageFiles}
+        />
       </div>
     </div>
   );
