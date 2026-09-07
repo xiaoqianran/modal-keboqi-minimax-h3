@@ -99,6 +99,8 @@ def studio_catalog() -> dict[str, Any]:
         "ltx25": {
             "models": list(legacy.LTX25_MODEL_CHOICES),
             "defaults": dict(legacy.LTX25_DEFAULTS),
+            "prompt_models": list(legacy.GEMINI_PROMPT_MODELS),
+            "default_prompt_model": legacy.DEFAULT_GEMINI_PROMPT_MODEL,
             "workflows": [
                 {
                     "name": name,
@@ -177,6 +179,26 @@ def studio_gallery_empty(request: gr.Request) -> dict[str, Any]:
     return _gallery_payload(request, message=message)
 
 
+def studio_ltx_inventory() -> dict[str, str]:
+    import gradio_app as legacy
+
+    return {"inventory": str(legacy.render_ltx25_official_model_inventory())}
+
+
+def studio_ltx_prepare_workflow(workflow_name: str) -> dict[str, str]:
+    import gradio_app as legacy
+
+    status, inventory = legacy.prepare_ltx25_official_workflow(workflow_name)
+    return {"status": str(status), "inventory": str(inventory)}
+
+
+def studio_ltx_prepare_all() -> dict[str, str]:
+    import gradio_app as legacy
+
+    status, inventory = legacy.prepare_all_ltx25_official_models()
+    return {"status": str(status), "inventory": str(inventory)}
+
+
 def studio_system_status() -> dict[str, Any]:
     # Lazy import avoids the layout -> studio_api -> gradio_app import cycle.
     import gradio_app as legacy
@@ -195,6 +217,7 @@ def build_studio_api() -> None:
         prompts = gr.Textbox()
         batch_id = gr.Textbox()
         gallery_video = gr.Textbox()
+        workflow_name = gr.Textbox()
         payload = gr.JSON()
 
         gr.Button(visible=False).click(
@@ -270,6 +293,30 @@ def build_studio_api() -> None:
             queue=False,
             show_progress="hidden",
             api_name="studio_gallery_empty",
+        )
+        gr.Button(visible=False).click(
+            studio_ltx_inventory,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_ltx_inventory",
+        )
+        gr.Button(visible=False).click(
+            studio_ltx_prepare_workflow,
+            inputs=workflow_name,
+            outputs=payload,
+            concurrency_id="h3-gpu",
+            concurrency_limit=1,
+            show_progress="minimal",
+            api_name="studio_ltx_prepare_workflow",
+        )
+        gr.Button(visible=False).click(
+            studio_ltx_prepare_all,
+            outputs=payload,
+            concurrency_id="h3-gpu",
+            concurrency_limit=1,
+            show_progress="minimal",
+            api_name="studio_ltx_prepare_all",
         )
         gr.Button(visible=False).click(
             studio_system_status,
