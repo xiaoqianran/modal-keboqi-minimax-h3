@@ -52,6 +52,66 @@ export interface GallerySnapshot {
   items: GalleryItem[];
 }
 
+export interface Music3Defaults {
+  model: string;
+  duration: number;
+  seed: number;
+  steps: number;
+  cfg: number;
+  ar_cfg: number;
+  top_k: number;
+  tiled_decode: boolean;
+}
+
+export interface Ltx25Defaults {
+  model: string;
+  mode: string;
+  duration: number;
+  fps: number;
+  width: number;
+  height: number;
+  seed: number;
+  cfg: number;
+  sampler: string;
+  image_strength: number;
+  middle_time: number;
+  middle_strength: number;
+  end_strength: number;
+}
+
+export interface LtxWorkflowSummary {
+  name: string;
+  id: string;
+  description: string;
+  inputs: string;
+  audio_only: boolean;
+}
+
+export interface StudioCatalog {
+  music3: {
+    models: string[];
+    defaults: Music3Defaults;
+  };
+  ltx25: {
+    models: string[];
+    defaults: Ltx25Defaults;
+    workflows: LtxWorkflowSummary[];
+  };
+}
+
+export interface Music3Request {
+  model: string;
+  caption: string;
+  lyrics: string;
+  duration: number;
+  seed: number;
+  steps: number;
+  cfg: number;
+  arCfg: number;
+  topK: number;
+  tiledDecode: boolean;
+}
+
 export interface SystemStatus {
   detail: string;
   comfyui_url: string;
