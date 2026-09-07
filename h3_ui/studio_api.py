@@ -2,8 +2,8 @@
 
 This module is intentionally thin. It exposes existing application services through
 named Gradio API endpoints without duplicating the MiniMax H3 / ComfyUI runtime.
-The React frontend talks only to these stable endpoints (plus the existing
-``/generate_video`` generator) through its transport adapter.
+The React frontend talks only to these stable endpoints (plus existing generation
+endpoints) through its transport adapter.
 """
 
 from __future__ import annotations
@@ -87,6 +87,32 @@ def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any
     }
 
 
+def studio_catalog() -> dict[str, Any]:
+    """Return stable choice/default data needed by non-Gradio views."""
+    import gradio_app as legacy
+
+    return {
+        "music3": {
+            "models": list(legacy.MUSIC3_MODEL_CHOICES),
+            "defaults": dict(legacy.MUSIC3_DEFAULTS),
+        },
+        "ltx25": {
+            "models": list(legacy.LTX25_MODEL_CHOICES),
+            "defaults": dict(legacy.LTX25_DEFAULTS),
+            "workflows": [
+                {
+                    "name": name,
+                    "id": entry["id"],
+                    "description": entry["description"],
+                    "inputs": entry["inputs"],
+                    "audio_only": bool(entry.get("audio_only", False)),
+                }
+                for name, entry in legacy.LTX25_WORKFLOWS.items()
+            ],
+        },
+    }
+
+
 def studio_batch_enqueue(prompts_text: str, request: gr.Request) -> dict[str, Any]:
     prompts = _parse_prompts(prompts_text)
     owner = _owner(request)
@@ -112,11 +138,23 @@ def studio_batch_cancel(
     return payload
 
 
-def studio_generate_cancel(request: gr.Request) -> dict[str, str]:
-    # /generate_video is owned by the existing "api" job family.
+def _cancel_family(request: gr.Request, family: str) -> dict[str, str]:
     import gradio_app as legacy
 
-    return {"message": str(legacy.interrupt(request, "api"))}
+    return {"message": str(legacy.interrupt(request, family))}
+
+
+def studio_generate_cancel(request: gr.Request) -> dict[str, str]:
+    # /generate_video is owned by the existing "api" job family.
+    return _cancel_family(request, "api")
+
+
+def studio_ltx_cancel(request: gr.Request) -> dict[str, str]:
+    return _cancel_family(request, "ltx")
+
+
+def studio_music_cancel(request: gr.Request) -> dict[str, str]:
+    return _cancel_family(request, "music")
 
 
 def studio_gallery_list(request: gr.Request) -> dict[str, Any]:
@@ -160,6 +198,13 @@ def build_studio_api() -> None:
         payload = gr.JSON()
 
         gr.Button(visible=False).click(
+            studio_catalog,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_catalog",
+        )
+        gr.Button(visible=False).click(
             studio_batch_enqueue,
             inputs=prompts,
             outputs=payload,
@@ -189,6 +234,20 @@ def build_studio_api() -> None:
             queue=False,
             show_progress="hidden",
             api_name="studio_generate_cancel",
+        )
+        gr.Button(visible=False).click(
+            studio_ltx_cancel,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_ltx_cancel",
+        )
+        gr.Button(visible=False).click(
+            studio_music_cancel,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_music_cancel",
         )
         gr.Button(visible=False).click(
             studio_gallery_list,
