@@ -95,6 +95,8 @@ export interface StudioCatalog {
   ltx25: {
     models: string[];
     defaults: Ltx25Defaults;
+    prompt_models: string[];
+    default_prompt_model: string;
     workflows: LtxWorkflowSummary[];
   };
 }
@@ -110,6 +112,35 @@ export interface Music3Request {
   arCfg: number;
   topK: number;
   tiledDecode: boolean;
+}
+
+export interface Ltx25Request {
+  mode: "Text to video" | "Image to video";
+  model: string;
+  prompt: string;
+  negativePrompt: string;
+  firstImage: File | null;
+  duration: number;
+  fps: number;
+  width: number;
+  height: number;
+  seed: number;
+  cfg: number;
+  sampler: string;
+  imageStrength: number;
+  middleImage: File | null;
+  middleTime: number;
+  middleStrength: number;
+  endImage: File | null;
+  endStrength: number;
+}
+
+export interface LtxInventory {
+  inventory: string;
+}
+
+export interface LtxPreparation extends LtxInventory {
+  status: string;
 }
 
 export interface SystemStatus {
