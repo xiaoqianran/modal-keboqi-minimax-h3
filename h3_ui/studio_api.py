@@ -60,7 +60,6 @@ def _update_value(value: Any) -> Any:
 
 
 def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any]:
-    # Lazy import avoids layout -> studio_api -> gradio_app during UI construction.
     import gradio_app as legacy
 
     items: list[dict[str, Any]] = []
@@ -72,8 +71,6 @@ def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any
         snapshot = legacy.read_snapshot(video)
         items.append(
             {
-                # The path is an opaque server identifier in Studio. Destructive
-                # operations still flow through the existing legacy validators.
                 "path": str(video),
                 "name": video.name,
                 "preview_url": _relative_app_url(
@@ -87,11 +84,7 @@ def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any
                 "snapshot": snapshot,
             }
         )
-    return {
-        "message": message,
-        "count": len(items),
-        "items": items,
-    }
+    return {"message": message, "count": len(items), "items": items}
 
 
 def studio_catalog() -> dict[str, Any]:
@@ -202,15 +195,11 @@ def studio_batch_enqueue(prompts_text: str, request: gr.Request) -> dict[str, An
     return payload
 
 
-def studio_batch_snapshot(
-    selected_batch_id: str | None, request: gr.Request
-) -> dict[str, Any]:
+def studio_batch_snapshot(selected_batch_id: str | None, request: gr.Request) -> dict[str, Any]:
     return _batch_payload(_owner(request), selected_batch_id)
 
 
-def studio_batch_cancel(
-    batch_id: str | None, request: gr.Request
-) -> dict[str, Any]:
+def studio_batch_cancel(batch_id: str | None, request: gr.Request) -> dict[str, Any]:
     owner = _owner(request)
     message = _MANAGER.cancel(owner, str(batch_id or ""))
     payload = _batch_payload(owner, batch_id)
@@ -220,12 +209,10 @@ def studio_batch_cancel(
 
 def _cancel_family(request: gr.Request, family: str) -> dict[str, str]:
     import gradio_app as legacy
-
     return {"message": str(legacy.interrupt(request, family))}
 
 
 def studio_generate_cancel(request: gr.Request) -> dict[str, str]:
-    # /generate_video is owned by the existing "api" job family.
     return _cancel_family(request, "api")
 
 
@@ -255,7 +242,6 @@ def studio_gallery_list(request: gr.Request) -> dict[str, Any]:
 
 def studio_gallery_delete(selected_video: str, request: gr.Request) -> dict[str, Any]:
     import gradio_app as legacy
-
     result = legacy.delete_selected_gallery_video(selected_video, True)
     message = str(result[2]) if len(result) > 2 else "Output deleted."
     return _gallery_payload(request, message=message)
@@ -263,9 +249,15 @@ def studio_gallery_delete(selected_video: str, request: gr.Request) -> dict[str,
 
 def studio_gallery_empty(request: gr.Request) -> dict[str, Any]:
     import gradio_app as legacy
-
     result = legacy.empty_generated_gallery(None, True)
     message = str(result[2]) if len(result) > 2 else "Gallery emptied."
+    return _gallery_payload(request, message=message)
+
+
+def studio_gallery_import(uploaded_video: str | None, request: gr.Request) -> dict[str, Any]:
+    import gradio_app as legacy
+    result = legacy.import_gallery_video(uploaded_video)
+    message = str(result[2]) if len(result) > 2 else "Video imported."
     return _gallery_payload(request, message=message)
 
 
@@ -283,57 +275,48 @@ def studio_gallery_postprocess(
     request: gr.Request,
     progress=gr.Progress(track_tqdm=False),
 ):
-    """Adapt the existing Gallery generator to one stable JSON stream."""
     import gradio_app as legacy
-
     updates = legacy.postprocess_selected_gallery_video(
-        selected_video,
-        option,
-        seed,
-        seedvr2_model,
-        ltx25_model,
-        ltx25_prompt,
-        force_offload,
-        split_upscale,
-        split_seconds,
-        upscale_resolution,
-        request,
-        progress,
+        selected_video, option, seed, seedvr2_model, ltx25_model, ltx25_prompt,
+        force_offload, split_upscale, split_seconds, upscale_resolution, request, progress,
     )
     for update in updates:
         values = tuple(update) if isinstance(update, (tuple, list)) else (update,)
         selected = _update_value(values[5]) if len(values) > 5 else None
         status = values[-1] if values else ""
-        yield {
-            "status": str(status or ""),
-            "selected_path": str(selected or ""),
-        }
+        yield {"status": str(status or ""), "selected_path": str(selected or "")}
 
 
 def studio_ltx_inventory() -> dict[str, str]:
     import gradio_app as legacy
-
     return {"inventory": str(legacy.render_ltx25_official_model_inventory())}
 
 
 def studio_ltx_prepare_workflow(workflow_name: str) -> dict[str, str]:
     import gradio_app as legacy
-
     status, inventory = legacy.prepare_ltx25_official_workflow(workflow_name)
     return {"status": str(status), "inventory": str(inventory)}
 
 
 def studio_ltx_prepare_all() -> dict[str, str]:
     import gradio_app as legacy
-
     status, inventory = legacy.prepare_all_ltx25_official_models()
     return {"status": str(status), "inventory": str(inventory)}
 
 
-def studio_system_status() -> dict[str, Any]:
-    # Lazy import avoids the layout -> studio_api -> gradio_app import cycle.
+def studio_unload_models() -> dict[str, str]:
     import gradio_app as legacy
+    message, detail = legacy.unload_all_models()
+    return {"message": str(message), "detail": str(detail)}
 
+
+def studio_compile_trt_vae() -> dict[str, str]:
+    import gradio_app as legacy
+    return {"message": str(legacy.compile_trt_video_vae())}
+
+
+def studio_system_status() -> dict[str, Any]:
+    import gradio_app as legacy
     detail = str(legacy.backend_status())
     return {
         "detail": detail,
@@ -348,6 +331,7 @@ def build_studio_api() -> None:
         prompts = gr.Textbox()
         batch_id = gr.Textbox()
         gallery_video = gr.Textbox()
+        gallery_upload = gr.Video()
         gallery_option = gr.Textbox()
         gallery_seed = gr.Number()
         gallery_seedvr2_model = gr.Textbox()
@@ -360,149 +344,31 @@ def build_studio_api() -> None:
         workflow_name = gr.Textbox()
         payload = gr.JSON()
 
-        gr.Button(visible=False).click(
-            studio_catalog,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_catalog",
-        )
-        gr.Button(visible=False).click(
-            studio_batch_enqueue,
-            inputs=prompts,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_batch_enqueue",
-        )
-        gr.Button(visible=False).click(
-            studio_batch_snapshot,
-            inputs=batch_id,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_batch_snapshot",
-        )
-        gr.Button(visible=False).click(
-            studio_batch_cancel,
-            inputs=batch_id,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_batch_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_generate_cancel,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_generate_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_h3_cancel,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_h3_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_h3_input_cancel,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_h3_input_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_ltx_cancel,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_ltx_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_music_cancel,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_music_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_gallery_cancel,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_gallery_cancel",
-        )
-        gr.Button(visible=False).click(
-            studio_gallery_list,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_gallery_list",
-        )
-        gr.Button(visible=False).click(
-            studio_gallery_delete,
-            inputs=gallery_video,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_gallery_delete",
-        )
-        gr.Button(visible=False).click(
-            studio_gallery_empty,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_gallery_empty",
-        )
+        gr.Button(visible=False).click(studio_catalog, outputs=payload, queue=False, show_progress="hidden", api_name="studio_catalog")
+        gr.Button(visible=False).click(studio_batch_enqueue, inputs=prompts, outputs=payload, queue=False, show_progress="hidden", api_name="studio_batch_enqueue")
+        gr.Button(visible=False).click(studio_batch_snapshot, inputs=batch_id, outputs=payload, queue=False, show_progress="hidden", api_name="studio_batch_snapshot")
+        gr.Button(visible=False).click(studio_batch_cancel, inputs=batch_id, outputs=payload, queue=False, show_progress="hidden", api_name="studio_batch_cancel")
+        gr.Button(visible=False).click(studio_generate_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_generate_cancel")
+        gr.Button(visible=False).click(studio_h3_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_h3_cancel")
+        gr.Button(visible=False).click(studio_h3_input_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_h3_input_cancel")
+        gr.Button(visible=False).click(studio_ltx_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_ltx_cancel")
+        gr.Button(visible=False).click(studio_music_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_music_cancel")
+        gr.Button(visible=False).click(studio_gallery_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_cancel")
+        gr.Button(visible=False).click(studio_gallery_list, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_list")
+        gr.Button(visible=False).click(studio_gallery_delete, inputs=gallery_video, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_delete")
+        gr.Button(visible=False).click(studio_gallery_empty, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_empty")
+        gr.Button(visible=False).click(studio_gallery_import, inputs=gallery_upload, outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1, show_progress="minimal", api_name="studio_gallery_import")
         gr.Button(visible=False).click(
             owned_generation(studio_gallery_postprocess, "gallery"),
-            inputs=[
-                gallery_video,
-                gallery_option,
-                gallery_seed,
-                gallery_seedvr2_model,
-                gallery_ltx25_model,
-                gallery_ltx25_prompt,
-                gallery_force_offload,
-                gallery_split_upscale,
-                gallery_split_seconds,
-                gallery_upscale_resolution,
-            ],
-            outputs=payload,
-            concurrency_id="h3-gpu",
-            concurrency_limit=1,
-            show_progress="minimal",
-            api_name="studio_gallery_postprocess",
+            inputs=[gallery_video, gallery_option, gallery_seed, gallery_seedvr2_model,
+                    gallery_ltx25_model, gallery_ltx25_prompt, gallery_force_offload,
+                    gallery_split_upscale, gallery_split_seconds, gallery_upscale_resolution],
+            outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1,
+            show_progress="minimal", api_name="studio_gallery_postprocess",
         )
-        gr.Button(visible=False).click(
-            studio_ltx_inventory,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_ltx_inventory",
-        )
-        gr.Button(visible=False).click(
-            studio_ltx_prepare_workflow,
-            inputs=workflow_name,
-            outputs=payload,
-            concurrency_id="h3-gpu",
-            concurrency_limit=1,
-            show_progress="minimal",
-            api_name="studio_ltx_prepare_workflow",
-        )
-        gr.Button(visible=False).click(
-            studio_ltx_prepare_all,
-            outputs=payload,
-            concurrency_id="h3-gpu",
-            concurrency_limit=1,
-            show_progress="minimal",
-            api_name="studio_ltx_prepare_all",
-        )
-        gr.Button(visible=False).click(
-            studio_system_status,
-            outputs=payload,
-            queue=False,
-            show_progress="hidden",
-            api_name="studio_system_status",
-        )
+        gr.Button(visible=False).click(studio_ltx_inventory, outputs=payload, queue=False, show_progress="hidden", api_name="studio_ltx_inventory")
+        gr.Button(visible=False).click(studio_ltx_prepare_workflow, inputs=workflow_name, outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1, show_progress="minimal", api_name="studio_ltx_prepare_workflow")
+        gr.Button(visible=False).click(studio_ltx_prepare_all, outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1, show_progress="minimal", api_name="studio_ltx_prepare_all")
+        gr.Button(visible=False).click(studio_unload_models, outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1, show_progress="minimal", api_name="studio_unload_models")
+        gr.Button(visible=False).click(studio_compile_trt_vae, outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1, show_progress="minimal", api_name="studio_compile_trt_vae")
+        gr.Button(visible=False).click(studio_system_status, outputs=payload, queue=False, show_progress="hidden", api_name="studio_system_status")
