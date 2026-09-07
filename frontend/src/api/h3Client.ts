@@ -28,6 +28,13 @@ const source = new URL(configuredSource, window.location.origin).toString();
 
 let clientPromise: ReturnType<typeof Client.connect> | null = null;
 
+type H3InternalUpdate = H3GenerateUpdate & { imageFramePaths: string[] };
+
+export interface H3ImageSaveResult {
+  files: string[];
+  status: string;
+}
+
 function getClient() {
   if (!clientPromise) {
     clientPromise = Client.connect(source, { events: ["data", "status"] });
@@ -99,6 +106,29 @@ function collectMediaUrls(value: unknown, target: string[] = []): string[] {
     const record = value as Record<string, unknown>;
     for (const key of ["value", "data", "files"]) {
       if (key in record) collectMediaUrls(record[key], target);
+    }
+  }
+  return target;
+}
+
+function collectServerPaths(value: unknown, target: string[] = []): string[] {
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (raw && !/^https?:\/\//i.test(raw) && !target.includes(raw)) target.push(raw);
+    return target;
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) collectServerPaths(child, target);
+    return target;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.path === "string" && record.path.trim() && !/^https?:\/\//i.test(record.path)) {
+      const path = record.path.trim();
+      if (!target.includes(path)) target.push(path);
+    }
+    for (const key of ["value", "data", "files"]) {
+      if (key in record) collectServerPaths(record[key], target);
     }
   }
   return target;
@@ -290,8 +320,8 @@ export async function generateH3Advanced(
   };
 
   const submission = client.submit("/generate_video_advanced", payload);
-  let latest: H3GenerateUpdate = {
-    videos: [], images: [], audioUrl: "", status: "Submitting",
+  let latest: H3InternalUpdate = {
+    videos: [], images: [], audioUrl: "", status: "Submitting", imageFramePaths: [],
   };
   const abort = () => submission.cancel();
   signal?.addEventListener("abort", abort, { once: true });
@@ -315,7 +345,15 @@ export async function generateH3Advanced(
       }
       const images = collectMediaUrls(data[5], [...latest.images]);
       const audioUrl = collectMediaUrls(data[9])[0] || latest.audioUrl;
-      latest = { ...latest, videos, images, audioUrl, status };
+      const framePaths = collectServerPaths(data[7]);
+      latest = {
+        ...latest,
+        videos,
+        images,
+        audioUrl,
+        status,
+        imageFramePaths: framePaths.length ? framePaths : latest.imageFramePaths,
+      };
       onUpdate(latest);
     }
   } finally {
@@ -323,6 +361,19 @@ export async function generateH3Advanced(
   }
 
   return latest;
+}
+
+export async function saveH3ImageFrames(
+  framePaths: string[],
+  selectedLabels: string[],
+): Promise<H3ImageSaveResult> {
+  const client = await getClient();
+  const result = await client.predict("/save_h3_image_frames", [framePaths, selectedLabels]);
+  const data = (result as { data?: unknown[] }).data ?? [];
+  return {
+    files: collectMediaUrls(data[0]),
+    status: asString(data[1]),
+  };
 }
 
 export async function enhanceH3Prompt(request: H3PromptEnhanceRequest): Promise<H3PromptEnhanceResult> {
@@ -372,10 +423,7 @@ export async function enhanceH3Prompt(request: H3PromptEnhanceRequest): Promise<
     fl2va_audio_3: fileInput(at(voices, 2)),
   });
   const data = (result as { data?: unknown[] }).data ?? [];
-  return {
-    prompt: asString(data[0]),
-    status: asString(data[1]),
-  };
+  return { prompt: asString(data[0]), status: asString(data[1]) };
 }
 
 export async function upscaleH3InputImages(
@@ -448,25 +496,19 @@ export async function upscaleH3InputImages(
 
 export async function cancelH3InputUpscale(): Promise<string> {
   const client = await getClient();
-  const payload = parseJsonResult<{ message?: string }>(
-    await client.predict("/studio_h3_input_cancel", []),
-  );
+  const payload = parseJsonResult<{ message?: string }>(await client.predict("/studio_h3_input_cancel", []));
   return payload.message || "Cancellation requested.";
 }
 
 export async function cancelDefaultVideo(): Promise<string> {
   const client = await getClient();
-  const payload = parseJsonResult<{ message?: string }>(
-    await client.predict("/studio_generate_cancel", []),
-  );
+  const payload = parseJsonResult<{ message?: string }>(await client.predict("/studio_generate_cancel", []));
   return payload.message || "Cancellation requested.";
 }
 
 export async function cancelH3Advanced(): Promise<string> {
   const client = await getClient();
-  const payload = parseJsonResult<{ message?: string }>(
-    await client.predict("/studio_h3_cancel", []),
-  );
+  const payload = parseJsonResult<{ message?: string }>(await client.predict("/studio_h3_cancel", []));
   return payload.message || "Cancellation requested.";
 }
 
@@ -478,16 +520,8 @@ export async function generateMusic3(
   const client = await getClient();
   return consumeMediaSubmission(
     client.submit("/generate_music3", [
-      request.model,
-      request.caption,
-      request.lyrics,
-      request.duration,
-      request.seed,
-      request.steps,
-      request.cfg,
-      request.arCfg,
-      request.topK,
-      request.tiledDecode,
+      request.model, request.caption, request.lyrics, request.duration, request.seed,
+      request.steps, request.cfg, request.arCfg, request.topK, request.tiledDecode,
     ]),
     onUpdate,
     signal,
@@ -503,27 +537,16 @@ export async function enhanceMusic3Prompt(
 ): Promise<MusicPromptEnhanceResult> {
   const client = await getClient();
   const result = await client.predict("/enhance_music3_prompt", [
-    caption,
-    model,
-    temporaryApiKey,
-    lyrics,
-    fileInput(at(referenceImages, 0)),
-    fileInput(at(referenceImages, 1)),
-    fileInput(at(referenceImages, 2)),
+    caption, model, temporaryApiKey, lyrics,
+    fileInput(at(referenceImages, 0)), fileInput(at(referenceImages, 1)), fileInput(at(referenceImages, 2)),
   ]);
   const data = (result as { data?: unknown[] }).data ?? [];
-  return {
-    caption: asString(data[0]),
-    lyrics: asString(data[1]),
-    status: asString(data[2]),
-  };
+  return { caption: asString(data[0]), lyrics: asString(data[1]), status: asString(data[2]) };
 }
 
 export async function cancelMusic3(): Promise<string> {
   const client = await getClient();
-  const payload = parseJsonResult<{ message?: string }>(
-    await client.predict("/studio_music_cancel", []),
-  );
+  const payload = parseJsonResult<{ message?: string }>(await client.predict("/studio_music_cancel", []));
   return payload.message || "Cancellation requested.";
 }
 
@@ -535,24 +558,11 @@ export async function generateLtx25(
   const client = await getClient();
   return consumeMediaSubmission(
     client.submit("/generate_ltx25_video", [
-      request.mode,
-      request.model,
-      request.prompt,
-      request.negativePrompt,
-      fileInput(request.firstImage),
-      request.duration,
-      request.fps,
-      request.width,
-      request.height,
-      request.seed,
-      request.cfg,
-      request.sampler,
-      request.imageStrength,
-      fileInput(request.middleImage),
-      request.middleTime,
-      request.middleStrength,
-      fileInput(request.endImage),
-      request.endStrength,
+      request.mode, request.model, request.prompt, request.negativePrompt,
+      fileInput(request.firstImage), request.duration, request.fps, request.width,
+      request.height, request.seed, request.cfg, request.sampler, request.imageStrength,
+      fileInput(request.middleImage), request.middleTime, request.middleStrength,
+      fileInput(request.endImage), request.endStrength,
     ]),
     onUpdate,
     signal,
@@ -567,16 +577,9 @@ export async function enhanceLtx25Prompt(
 ): Promise<PromptEnhanceResult> {
   const client = await getClient();
   const result = await client.predict("/enhance_ltx25_prompt", [
-    prompt,
-    model,
-    temporaryApiKey,
-    request.mode,
-    fileInput(request.firstImage),
-    fileInput(request.middleImage),
-    fileInput(request.endImage),
-    request.duration,
-    request.width,
-    request.height,
+    prompt, model, temporaryApiKey, request.mode, fileInput(request.firstImage),
+    fileInput(request.middleImage), fileInput(request.endImage), request.duration,
+    request.width, request.height,
   ]);
   const data = (result as { data?: unknown[] }).data ?? [];
   return { prompt: asString(data[0]), status: asString(data[1]) };
@@ -584,9 +587,7 @@ export async function enhanceLtx25Prompt(
 
 export async function cancelLtx25(): Promise<string> {
   const client = await getClient();
-  const payload = parseJsonResult<{ message?: string }>(
-    await client.predict("/studio_ltx_cancel", []),
-  );
+  const payload = parseJsonResult<{ message?: string }>(await client.predict("/studio_ltx_cancel", []));
   return payload.message || "Cancellation requested.";
 }
 
@@ -597,66 +598,42 @@ export async function ltxInventory(): Promise<LtxInventory> {
 
 export async function prepareLtxWorkflow(workflowName: string): Promise<LtxPreparation> {
   const client = await getClient();
-  return parseJsonResult<LtxPreparation>(
-    await client.predict("/studio_ltx_prepare_workflow", [workflowName]),
-  );
+  return parseJsonResult<LtxPreparation>(await client.predict("/studio_ltx_prepare_workflow", [workflowName]));
 }
 
 export async function prepareAllLtxModels(): Promise<LtxPreparation> {
   const client = await getClient();
-  return parseJsonResult<LtxPreparation>(
-    await client.predict("/studio_ltx_prepare_all", []),
-  );
+  return parseJsonResult<LtxPreparation>(await client.predict("/studio_ltx_prepare_all", []));
 }
 
 export async function enqueueBatch(promptsText: string): Promise<BatchSnapshot> {
   const client = await getClient();
-  return parseJsonResult<BatchSnapshot>(
-    await client.predict("/studio_batch_enqueue", [promptsText]),
-  );
+  return parseJsonResult<BatchSnapshot>(await client.predict("/studio_batch_enqueue", [promptsText]));
 }
 
-export async function batchSnapshot(
-  selectedBatchId: string | null,
-): Promise<BatchSnapshot> {
+export async function batchSnapshot(selectedBatchId: string | null): Promise<BatchSnapshot> {
   const client = await getClient();
-  return parseJsonResult<BatchSnapshot>(
-    await client.predict("/studio_batch_snapshot", [selectedBatchId || ""]),
-  );
+  return parseJsonResult<BatchSnapshot>(await client.predict("/studio_batch_snapshot", [selectedBatchId || ""]));
 }
 
 export async function cancelBatch(batchId: string): Promise<BatchSnapshot> {
   const client = await getClient();
-  return parseJsonResult<BatchSnapshot>(
-    await client.predict("/studio_batch_cancel", [batchId]),
-  );
+  return parseJsonResult<BatchSnapshot>(await client.predict("/studio_batch_cancel", [batchId]));
 }
 
 export async function gallerySnapshot(): Promise<GallerySnapshot> {
   const client = await getClient();
-  return normalizeGallery(
-    parseJsonResult<GallerySnapshot>(
-      await client.predict("/studio_gallery_list", []),
-    ),
-  );
+  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_list", [])));
 }
 
 export async function deleteGalleryItem(path: string): Promise<GallerySnapshot> {
   const client = await getClient();
-  return normalizeGallery(
-    parseJsonResult<GallerySnapshot>(
-      await client.predict("/studio_gallery_delete", [path]),
-    ),
-  );
+  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_delete", [path])));
 }
 
 export async function emptyGallery(): Promise<GallerySnapshot> {
   const client = await getClient();
-  return normalizeGallery(
-    parseJsonResult<GallerySnapshot>(
-      await client.predict("/studio_gallery_empty", []),
-    ),
-  );
+  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_empty", [])));
 }
 
 export async function postprocessGalleryItem(
@@ -706,15 +683,11 @@ export async function postprocessGalleryItem(
 
 export async function cancelGalleryPostprocess(): Promise<string> {
   const client = await getClient();
-  const payload = parseJsonResult<{ message?: string }>(
-    await client.predict("/studio_gallery_cancel", []),
-  );
+  const payload = parseJsonResult<{ message?: string }>(await client.predict("/studio_gallery_cancel", []));
   return payload.message || "Cancellation requested.";
 }
 
 export async function systemStatus(): Promise<SystemStatus> {
   const client = await getClient();
-  return parseJsonResult<SystemStatus>(
-    await client.predict("/studio_system_status", []),
-  );
+  return parseJsonResult<SystemStatus>(await client.predict("/studio_system_status", []));
 }
