@@ -131,6 +131,15 @@ def studio_catalog() -> dict[str, Any]:
                 "fast": {name: list(size) for name, size in legacy.FAST_RESOLUTIONS.items()},
                 "large": {name: list(size) for name, size in legacy.LARGE_RESOLUTIONS.items()},
             },
+            "prompt_writer": {
+                "backends": list(legacy.PROMPT_WRITER_BACKENDS),
+                "default_backend": legacy.DEFAULT_PROMPT_WRITER_BACKEND,
+                "local_models": list(legacy.LOCAL_PROMPT_BASE_MODELS),
+                "default_local_model": legacy.DEFAULT_LOCAL_PROMPT_BASE_MODEL,
+                "gemini_models": list(legacy.GEMINI_PROMPT_MODELS),
+                "default_gemini_model": legacy.DEFAULT_GEMINI_PROMPT_MODEL,
+                "lightning_model": legacy.LIGHTNING_PROMPT_MODEL,
+            },
         },
         "music3": {
             "models": list(legacy.MUSIC3_MODEL_CHOICES),
