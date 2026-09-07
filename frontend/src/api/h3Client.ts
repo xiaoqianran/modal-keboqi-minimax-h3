@@ -4,6 +4,8 @@ import type {
   BatchSnapshot,
   GallerySnapshot,
   GenerateUpdate,
+  Music3Request,
+  StudioCatalog,
   SystemStatus,
 } from "./types";
 
@@ -47,8 +49,21 @@ export function backendUrl(path: string): string {
 }
 
 function normalizeOutputUrl(value: unknown): string {
-  const raw = asString(value);
-  return raw ? backendUrl(raw) : "";
+  if (typeof value === "string") {
+    return value.trim() ? backendUrl(value) : "";
+  }
+  if (value && typeof value === "object") {
+    const file = value as Record<string, unknown>;
+    const url = typeof file.url === "string" ? file.url : "";
+    if (url) return backendUrl(url);
+    const downloadUrl = typeof file.download_url === "string" ? file.download_url : "";
+    if (downloadUrl) return backendUrl(downloadUrl);
+    const path = typeof file.path === "string" ? file.path : "";
+    if (/^https?:\/\//i.test(path) || path.startsWith("/gradio_api/")) {
+      return backendUrl(path);
+    }
+  }
+  return "";
 }
 
 function normalizeGallery(snapshot: GallerySnapshot): GallerySnapshot {
@@ -62,41 +77,41 @@ function normalizeGallery(snapshot: GallerySnapshot): GallerySnapshot {
   };
 }
 
-export async function generateDefaultVideo(
-  prompt: string,
+function statusUpdate(message: unknown, latest: GenerateUpdate): GenerateUpdate {
+  const status = message as {
+    stage?: string;
+    position?: number;
+    size?: number;
+    queue_size?: number;
+    message?: string;
+    progress_data?: Array<{ desc?: string | null }>;
+  };
+  const desc = status.progress_data?.at(-1)?.desc || status.message;
+  return {
+    ...latest,
+    status: desc || status.stage || "Working",
+    stage: status.stage,
+    queuePosition: status.position,
+    queueSize: status.size ?? status.queue_size,
+  };
+}
+
+async function consumeMediaSubmission(
+  submission: ReturnType<Awaited<ReturnType<typeof getClient>>["submit"]>,
   onUpdate: (update: GenerateUpdate) => void,
   signal?: AbortSignal,
 ): Promise<GenerateUpdate> {
-  const client = await getClient();
-  const submission = client.submit("/generate_video", [prompt]);
   let latest: GenerateUpdate = { outputUrl: "", status: "Submitting" };
-
   const abort = () => submission.cancel();
   signal?.addEventListener("abort", abort, { once: true });
 
   try {
     for await (const message of submission) {
       if (message.type === "status") {
-        const status = message as unknown as {
-          stage?: string;
-          position?: number;
-          size?: number;
-          queue_size?: number;
-          message?: string;
-          progress_data?: Array<{ desc?: string | null }>;
-        };
-        const desc = status.progress_data?.at(-1)?.desc || status.message;
-        latest = {
-          ...latest,
-          status: desc || status.stage || "Working",
-          stage: status.stage,
-          queuePosition: status.position,
-          queueSize: status.size ?? status.queue_size,
-        };
+        latest = statusUpdate(message, latest);
         onUpdate(latest);
         continue;
       }
-
       if (message.type === "data") {
         const data = (message as unknown as { data?: unknown[] }).data ?? [];
         const outputUrl = normalizeOutputUrl(data[0]);
@@ -112,10 +127,60 @@ export async function generateDefaultVideo(
   return latest;
 }
 
+export async function studioCatalog(): Promise<StudioCatalog> {
+  const client = await getClient();
+  return parseJsonResult<StudioCatalog>(await client.predict("/studio_catalog", []));
+}
+
+export async function generateDefaultVideo(
+  prompt: string,
+  onUpdate: (update: GenerateUpdate) => void,
+  signal?: AbortSignal,
+): Promise<GenerateUpdate> {
+  const client = await getClient();
+  return consumeMediaSubmission(
+    client.submit("/generate_video", [prompt]),
+    onUpdate,
+    signal,
+  );
+}
+
 export async function cancelDefaultVideo(): Promise<string> {
   const client = await getClient();
   const payload = parseJsonResult<{ message?: string }>(
     await client.predict("/studio_generate_cancel", []),
+  );
+  return payload.message || "Cancellation requested.";
+}
+
+export async function generateMusic3(
+  request: Music3Request,
+  onUpdate: (update: GenerateUpdate) => void,
+  signal?: AbortSignal,
+): Promise<GenerateUpdate> {
+  const client = await getClient();
+  return consumeMediaSubmission(
+    client.submit("/generate_music3", [
+      request.model,
+      request.caption,
+      request.lyrics,
+      request.duration,
+      request.seed,
+      request.steps,
+      request.cfg,
+      request.arCfg,
+      request.topK,
+      request.tiledDecode,
+    ]),
+    onUpdate,
+    signal,
+  );
+}
+
+export async function cancelMusic3(): Promise<string> {
+  const client = await getClient();
+  const payload = parseJsonResult<{ message?: string }>(
+    await client.predict("/studio_music_cancel", []),
   );
   return payload.message || "Cancellation requested.";
 }
