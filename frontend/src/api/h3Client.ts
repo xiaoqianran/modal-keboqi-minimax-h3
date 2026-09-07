@@ -2,16 +2,23 @@ import { Client, handle_file } from "@gradio/client";
 
 import type {
   BatchSnapshot,
+  GalleryPostprocessRequest,
+  GalleryPostprocessUpdate,
   GallerySnapshot,
   GenerateUpdate,
   H3AdvancedRequest,
   H3GenerateUpdate,
+  H3InputUpscaleRequest,
+  H3InputUpscaleResult,
   H3PromptEnhanceRequest,
   H3PromptEnhanceResult,
   Ltx25Request,
   LtxInventory,
   LtxPreparation,
+  MediaInput,
   Music3Request,
+  MusicPromptEnhanceResult,
+  PromptEnhanceResult,
   StudioCatalog,
   SystemStatus,
 } from "./types";
@@ -97,7 +104,7 @@ function collectMediaUrls(value: unknown, target: string[] = []): string[] {
   return target;
 }
 
-function fileInput(file: File | null | undefined) {
+function fileInput(file: MediaInput | File | null | undefined) {
   return file ? handle_file(file) : null;
 }
 
@@ -371,6 +378,82 @@ export async function enhanceH3Prompt(request: H3PromptEnhanceRequest): Promise<
   };
 }
 
+export async function upscaleH3InputImages(
+  request: H3InputUpscaleRequest,
+  onUpdate?: (update: H3InputUpscaleResult) => void,
+  signal?: AbortSignal,
+): Promise<H3InputUpscaleResult> {
+  const client = await getClient();
+  const generation = request.generation;
+  const refs = generation.referenceImages;
+  const submission = client.submit("/upscale_h3_input_images", {
+    selected_slots: request.selectedSlots,
+    model_choice: request.model,
+    seed: request.seed,
+    force_offload: request.forceOffload,
+    frame_width: request.frameWidth,
+    frame_height: request.frameHeight,
+    first_image: fileInput(generation.firstImage),
+    last_image: fileInput(generation.lastImage),
+    ref_image_1: fileInput(at(refs, 0)),
+    ref_image_2: fileInput(at(refs, 1)),
+    ref_image_3: fileInput(at(refs, 2)),
+    ref_image_4: fileInput(at(refs, 3)),
+    ref_image_5: fileInput(at(refs, 4)),
+    ref_image_6: fileInput(at(refs, 5)),
+    ref_image_7: fileInput(at(refs, 6)),
+    ref_image_8: fileInput(at(refs, 7)),
+    ref_image_9: fileInput(at(refs, 8)),
+  });
+
+  let latest: H3InputUpscaleResult = {
+    firstImage: generation.firstImage,
+    lastImage: generation.lastImage,
+    referenceImages: [...generation.referenceImages],
+    files: [],
+    status: "Submitting SeedVR2 input upscale",
+  };
+  const abort = () => submission.cancel();
+  signal?.addEventListener("abort", abort, { once: true });
+
+  try {
+    for await (const message of submission) {
+      if (message.type === "status") {
+        latest = { ...latest, status: statusFields(message).status };
+        onUpdate?.(latest);
+        continue;
+      }
+      if (message.type !== "data") continue;
+      const data = (message as unknown as { data?: unknown[] }).data ?? [];
+      const media: MediaInput[] = [latest.firstImage, latest.lastImage, ...latest.referenceImages];
+      for (let index = 0; index < Math.min(11, data.length); index += 1) {
+        const url = collectMediaUrls(data[index])[0];
+        if (url) media[index] = url;
+      }
+      latest = {
+        firstImage: media[0] ?? null,
+        lastImage: media[1] ?? null,
+        referenceImages: media.slice(2, 11),
+        files: collectMediaUrls(data[11], latest.files),
+        status: asString(data[12]) || latest.status,
+      };
+      onUpdate?.(latest);
+    }
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+
+  return latest;
+}
+
+export async function cancelH3InputUpscale(): Promise<string> {
+  const client = await getClient();
+  const payload = parseJsonResult<{ message?: string }>(
+    await client.predict("/studio_h3_input_cancel", []),
+  );
+  return payload.message || "Cancellation requested.";
+}
+
 export async function cancelDefaultVideo(): Promise<string> {
   const client = await getClient();
   const payload = parseJsonResult<{ message?: string }>(
@@ -411,6 +494,31 @@ export async function generateMusic3(
   );
 }
 
+export async function enhanceMusic3Prompt(
+  caption: string,
+  model: string,
+  temporaryApiKey: string,
+  lyrics: string,
+  referenceImages: Array<File | null>,
+): Promise<MusicPromptEnhanceResult> {
+  const client = await getClient();
+  const result = await client.predict("/enhance_music3_prompt", [
+    caption,
+    model,
+    temporaryApiKey,
+    lyrics,
+    fileInput(at(referenceImages, 0)),
+    fileInput(at(referenceImages, 1)),
+    fileInput(at(referenceImages, 2)),
+  ]);
+  const data = (result as { data?: unknown[] }).data ?? [];
+  return {
+    caption: asString(data[0]),
+    lyrics: asString(data[1]),
+    status: asString(data[2]),
+  };
+}
+
 export async function cancelMusic3(): Promise<string> {
   const client = await getClient();
   const payload = parseJsonResult<{ message?: string }>(
@@ -449,6 +557,29 @@ export async function generateLtx25(
     onUpdate,
     signal,
   );
+}
+
+export async function enhanceLtx25Prompt(
+  prompt: string,
+  model: string,
+  temporaryApiKey: string,
+  request: Pick<Ltx25Request, "mode" | "firstImage" | "middleImage" | "endImage" | "duration" | "width" | "height">,
+): Promise<PromptEnhanceResult> {
+  const client = await getClient();
+  const result = await client.predict("/enhance_ltx25_prompt", [
+    prompt,
+    model,
+    temporaryApiKey,
+    request.mode,
+    fileInput(request.firstImage),
+    fileInput(request.middleImage),
+    fileInput(request.endImage),
+    request.duration,
+    request.width,
+    request.height,
+  ]);
+  const data = (result as { data?: unknown[] }).data ?? [];
+  return { prompt: asString(data[0]), status: asString(data[1]) };
 }
 
 export async function cancelLtx25(): Promise<string> {
@@ -526,6 +657,59 @@ export async function emptyGallery(): Promise<GallerySnapshot> {
       await client.predict("/studio_gallery_empty", []),
     ),
   );
+}
+
+export async function postprocessGalleryItem(
+  request: GalleryPostprocessRequest,
+  onUpdate: (update: GalleryPostprocessUpdate) => void,
+  signal?: AbortSignal,
+): Promise<GalleryPostprocessUpdate> {
+  const client = await getClient();
+  const submission = client.submit("/studio_gallery_postprocess", {
+    selected_video: request.selectedPath,
+    option: request.option,
+    seed: request.seed,
+    seedvr2_model: request.seedvr2Model,
+    ltx25_model: request.ltx25Model,
+    ltx25_prompt: request.ltx25Prompt,
+    force_offload: request.forceOffload,
+    split_upscale: request.splitUpscale,
+    split_seconds: request.splitSeconds,
+    upscale_resolution: request.upscaleResolution,
+  });
+  let latest: GalleryPostprocessUpdate = { status: "Submitting Gallery post-process" };
+  const abort = () => submission.cancel();
+  signal?.addEventListener("abort", abort, { once: true });
+
+  try {
+    for await (const message of submission) {
+      if (message.type === "status") {
+        latest = { ...latest, ...statusFields(message) };
+        onUpdate(latest);
+        continue;
+      }
+      if (message.type !== "data") continue;
+      const data = (message as unknown as { data?: unknown[] }).data ?? [];
+      const payload = (data[0] && typeof data[0] === "object" ? data[0] : {}) as Record<string, unknown>;
+      latest = {
+        ...latest,
+        status: asString(payload.status) || latest.status,
+        selected_path: asString(payload.selected_path) || latest.selected_path,
+      };
+      onUpdate(latest);
+    }
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+  return latest;
+}
+
+export async function cancelGalleryPostprocess(): Promise<string> {
+  const client = await getClient();
+  const payload = parseJsonResult<{ message?: string }>(
+    await client.predict("/studio_gallery_cancel", []),
+  );
+  return payload.message || "Cancellation requested.";
 }
 
 export async function systemStatus(): Promise<SystemStatus> {
