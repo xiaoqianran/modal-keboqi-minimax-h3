@@ -3,13 +3,14 @@ import { useState } from "react";
 import type { StudioSection } from "./api/types";
 import { BatchView } from "./features/BatchView";
 import { CreateView } from "./features/CreateView";
+import { GalleryView } from "./features/GalleryView";
 import { PlaceholderView } from "./features/PlaceholderView";
 import { SystemView } from "./features/SystemView";
 
 const NAV: Array<{ id: StudioSection; label: string; hint: string }> = [
   { id: "create", label: "Create", hint: "H3 generation" },
   { id: "batch", label: "Batch", hint: "Persistent queue" },
-  { id: "gallery", label: "Gallery", hint: "Outputs & post" },
+  { id: "gallery", label: "Gallery", hint: "Outputs & metadata" },
   { id: "ltx", label: "LTX 2.5", hint: "Video workflows" },
   { id: "music", label: "Music 3", hint: "Audio generation" },
   { id: "system", label: "System", hint: "Runtime status" },
@@ -21,17 +22,10 @@ function page(section: StudioSection) {
       return <CreateView />;
     case "batch":
       return <BatchView />;
+    case "gallery":
+      return <GalleryView />;
     case "system":
       return <SystemView />;
-    case "gallery":
-      return (
-        <PlaceholderView
-          eyebrow="Output workspace"
-          title="Gallery"
-          description="The standalone Gallery will preserve the existing output browser and post-processing tools instead of reducing them to a file list."
-          items={["Video preview & download", "Generation metadata", "SeedVR2 / LTX post-processing", "Import, delete and empty actions"]}
-        />
-      );
     case "ltx":
       return (
         <PlaceholderView
