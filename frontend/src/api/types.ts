@@ -36,6 +36,22 @@ export interface BatchSnapshot {
   items: BatchItem[];
 }
 
+export interface GalleryItem {
+  path: string;
+  name: string;
+  preview_url: string;
+  download_url: string;
+  size_bytes: number;
+  modified_at: number;
+  snapshot: Record<string, unknown> | null;
+}
+
+export interface GallerySnapshot {
+  message?: string;
+  count: number;
+  items: GalleryItem[];
+}
+
 export interface SystemStatus {
   detail: string;
   comfyui_url: string;
