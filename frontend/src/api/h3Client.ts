@@ -2,6 +2,7 @@ import { Client } from "@gradio/client";
 
 import type {
   BatchSnapshot,
+  GallerySnapshot,
   GenerateUpdate,
   SystemStatus,
 } from "./types";
@@ -48,6 +49,17 @@ export function backendUrl(path: string): string {
 function normalizeOutputUrl(value: unknown): string {
   const raw = asString(value);
   return raw ? backendUrl(raw) : "";
+}
+
+function normalizeGallery(snapshot: GallerySnapshot): GallerySnapshot {
+  return {
+    ...snapshot,
+    items: snapshot.items.map((item) => ({
+      ...item,
+      preview_url: normalizeOutputUrl(item.preview_url),
+      download_url: normalizeOutputUrl(item.download_url),
+    })),
+  };
 }
 
 export async function generateDefaultVideo(
@@ -128,6 +140,33 @@ export async function cancelBatch(batchId: string): Promise<BatchSnapshot> {
   const client = await getClient();
   return parseJsonResult<BatchSnapshot>(
     await client.predict("/studio_batch_cancel", [batchId]),
+  );
+}
+
+export async function gallerySnapshot(): Promise<GallerySnapshot> {
+  const client = await getClient();
+  return normalizeGallery(
+    parseJsonResult<GallerySnapshot>(
+      await client.predict("/studio_gallery_list", []),
+    ),
+  );
+}
+
+export async function deleteGalleryItem(path: string): Promise<GallerySnapshot> {
+  const client = await getClient();
+  return normalizeGallery(
+    parseJsonResult<GallerySnapshot>(
+      await client.predict("/studio_gallery_delete", [path]),
+    ),
+  );
+}
+
+export async function emptyGallery(): Promise<GallerySnapshot> {
+  const client = await getClient();
+  return normalizeGallery(
+    parseJsonResult<GallerySnapshot>(
+      await client.predict("/studio_gallery_empty", []),
+    ),
   );
 }
 
