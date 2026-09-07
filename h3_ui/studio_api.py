@@ -91,7 +91,47 @@ def studio_catalog() -> dict[str, Any]:
     """Return stable choice/default data needed by non-Gradio views."""
     import gradio_app as legacy
 
+    h3_defaults = {
+        **dict(legacy.UI_DEFAULTS),
+        "batch_count": legacy.DEFAULT_VIDEO_BATCH_COUNT,
+        "sol_step_off": 0.0,
+        "sol_sink_tokens": 0,
+        "upscale_resolution": legacy.DEFAULT_UPSCALE_RESOLUTION,
+        "ltx25_model": legacy.DEFAULT_LTX25_MODEL,
+    }
     return {
+        "h3": {
+            "defaults": h3_defaults,
+            "choices": {
+                "modes": ["Text to video", "First / last frame", "Reference media"],
+                "result_formats": list(legacy.RESULT_FORMATS),
+                "model_profiles": list(legacy.MODEL_PROFILE_CHOICES),
+                "text_encoders": list(legacy.H3_TEXT_ENCODER_CHOICES),
+                "image_vaes": list(legacy.IMAGE_VAE_CHOICES),
+                "generation_modes": ["Normal", "Turbo"],
+                "turbo_variants": list(legacy.TURBO_SETTINGS),
+                "schedulers": ["simple", "beta", "normal"],
+                "attention_modes": ["Sage 2", "Kitchen", "SLA", "Sol-Attn", "Auto"],
+                "sla_presets": list(legacy.SLA_PRESET_INPUTS),
+                "sol_thresholds": ["diag", "exact"],
+                "sol_exact_modes": ["off", "exact_kv", "exact_kv_and_rows"],
+                "cache_modes": ["Spectrum", "FirstBlockCache", "EasyCache", "Off"],
+                "fbcache_presets": ["Safe", "Fast", "Aggressive", "Custom"],
+                "reference_sizes": ["match", "max"],
+                "latent_upscalers": list(legacy.H3_LATENT_UPSCALER_MODEL_CHOICES),
+                "latent_upscale_methods": list(legacy.H3_LATENT_UPSCALE_METHODS),
+                "seam_polish": ["off", "auto", "all"],
+                "postprocess": list(legacy.GENERATION_POSTPROCESS_OPTIONS),
+                "upscale_resolutions": list(legacy.UPSCALE_RESOLUTION_PRESETS),
+                "seedvr2_models": list(legacy.SEEDVR2_MODEL_CHOICES),
+                "ltx25_models": list(legacy.LTX25_MODEL_CHOICES),
+            },
+            "resolutions": {
+                "draft": {name: list(size) for name, size in legacy.DRAFT_RESOLUTIONS.items()},
+                "fast": {name: list(size) for name, size in legacy.FAST_RESOLUTIONS.items()},
+                "large": {name: list(size) for name, size in legacy.LARGE_RESOLUTIONS.items()},
+            },
+        },
         "music3": {
             "models": list(legacy.MUSIC3_MODEL_CHOICES),
             "defaults": dict(legacy.MUSIC3_DEFAULTS),
@@ -149,6 +189,10 @@ def _cancel_family(request: gr.Request, family: str) -> dict[str, str]:
 def studio_generate_cancel(request: gr.Request) -> dict[str, str]:
     # /generate_video is owned by the existing "api" job family.
     return _cancel_family(request, "api")
+
+
+def studio_h3_cancel(request: gr.Request) -> dict[str, str]:
+    return _cancel_family(request, "h3")
 
 
 def studio_ltx_cancel(request: gr.Request) -> dict[str, str]:
@@ -257,6 +301,13 @@ def build_studio_api() -> None:
             queue=False,
             show_progress="hidden",
             api_name="studio_generate_cancel",
+        )
+        gr.Button(visible=False).click(
+            studio_h3_cancel,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_h3_cancel",
         )
         gr.Button(visible=False).click(
             studio_ltx_cancel,
