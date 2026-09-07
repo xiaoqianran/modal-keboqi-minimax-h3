@@ -10,6 +10,7 @@ import "./music.css";
 import "./ltx.css";
 import "./tools.css";
 import "./utility.css";
+import "./image-tools.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
