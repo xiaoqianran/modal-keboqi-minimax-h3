@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { backendSource, systemStatus } from "../api/h3Client";
+import { backendSource, backendUrl, systemStatus } from "../api/h3Client";
 
 export function SystemView() {
   const statusQuery = useQuery({
@@ -10,7 +10,6 @@ export function SystemView() {
   });
 
   const data = statusQuery.data;
-  const backend = backendSource();
 
   return (
     <div className="stack-page">
@@ -25,9 +24,9 @@ export function SystemView() {
           </span>
         </div>
         <div className="system-links">
-          <a href={backend} target="_blank" rel="noreferrer">Open fallback Gradio</a>
-          <a href={data?.comfyui_url || "/comfyui/"} target="_blank" rel="noreferrer">Open ComfyUI</a>
-          <a href={data?.api_schema_url || "/gradio_api/openapi.json"} target="_blank" rel="noreferrer">API schema</a>
+          <a href={backendSource()} target="_blank" rel="noreferrer">Open fallback Gradio</a>
+          <a href={backendUrl(data?.comfyui_url || "/comfyui/")} target="_blank" rel="noreferrer">Open ComfyUI</a>
+          <a href={backendUrl(data?.api_schema_url || "/gradio_api/openapi.json")} target="_blank" rel="noreferrer">API schema</a>
         </div>
       </section>
 

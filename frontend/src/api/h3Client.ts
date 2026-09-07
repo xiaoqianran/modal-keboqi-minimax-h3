@@ -34,6 +34,22 @@ export function backendSource(): string {
   return source;
 }
 
+export function backendUrl(path: string): string {
+  const raw = String(path || "").trim();
+  if (!raw) return source;
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  const base = new URL(source);
+  const prefix = base.pathname.replace(/\/$/, "");
+  const suffix = raw.startsWith("/") ? raw : `/${raw}`;
+  return new URL(`${prefix}${suffix}`, base.origin).toString();
+}
+
+function normalizeOutputUrl(value: unknown): string {
+  const raw = asString(value);
+  return raw ? backendUrl(raw) : "";
+}
+
 export async function generateDefaultVideo(
   prompt: string,
   onUpdate: (update: GenerateUpdate) => void,
@@ -71,7 +87,7 @@ export async function generateDefaultVideo(
 
       if (message.type === "data") {
         const data = (message as unknown as { data?: unknown[] }).data ?? [];
-        const outputUrl = asString(data[0]);
+        const outputUrl = normalizeOutputUrl(data[0]);
         const status = asString(data[1]) || latest.status;
         latest = { ...latest, outputUrl: outputUrl || latest.outputUrl, status };
         onUpdate(latest);

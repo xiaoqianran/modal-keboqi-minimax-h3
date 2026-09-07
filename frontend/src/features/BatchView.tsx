@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { batchSnapshot, cancelBatch, enqueueBatch } from "../api/h3Client";
+import {
+  backendUrl,
+  batchSnapshot,
+  cancelBatch,
+  enqueueBatch,
+} from "../api/h3Client";
 
 export function BatchView() {
   const queryClient = useQueryClient();
@@ -177,7 +182,7 @@ export function BatchView() {
                   <td>{item.status}</td>
                   <td>
                     {item.output_url ? (
-                      <a href={item.output_url} target="_blank" rel="noreferrer">Open</a>
+                      <a href={backendUrl(item.output_url)} target="_blank" rel="noreferrer">Open</a>
                     ) : "—"}
                   </td>
                 </tr>
