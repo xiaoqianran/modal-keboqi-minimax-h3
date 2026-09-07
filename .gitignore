@@ -10,6 +10,10 @@ gradio_outputs/
 .gradio/
 .reference/
 
+# Standalone frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
 # Local secrets and editor state
 .env
 .env.*
