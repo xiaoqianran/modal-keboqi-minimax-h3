@@ -6,6 +6,7 @@ import App from "./App";
 import "./styles.css";
 import "./gallery.css";
 import "./music.css";
+import "./ltx.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
