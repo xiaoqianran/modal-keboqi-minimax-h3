@@ -3,13 +3,17 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   cancelH3Advanced,
+  cancelH3InputUpscale,
+  enhanceH3Prompt,
   generateH3Advanced,
   studioCatalog,
+  upscaleH3InputImages,
 } from "../api/h3Client";
 import type {
   H3AdvancedRequest,
   H3Catalog,
   H3GenerateUpdate,
+  MediaInput,
 } from "../api/types";
 
 const SAMPLE_PROMPT =
@@ -28,9 +32,9 @@ function initialRequest(catalog: H3Catalog): H3AdvancedRequest {
     prompt: SAMPLE_PROMPT,
     firstImage: null,
     lastImage: null,
-    referenceImages: Array<File | null>(9).fill(null),
-    referenceVideos: Array<File | null>(3).fill(null),
-    referenceAudios: Array<File | null>(3).fill(null),
+    referenceImages: Array<MediaInput>(9).fill(null),
+    referenceVideos: Array<MediaInput>(3).fill(null),
+    referenceAudios: Array<MediaInput>(3).fill(null),
     duration: d.duration,
     width: d.width,
     height: d.height,
@@ -84,7 +88,7 @@ function initialRequest(catalog: H3Catalog): H3AdvancedRequest {
     imageFrames: d.image_frames,
     semanticBridge: d.semantic_bridge,
     semanticBridgeAlpha: d.semantic_bridge_alpha,
-    fl2vaAudios: Array<File | null>(3).fill(null),
+    fl2vaAudios: Array<MediaInput>(3).fill(null),
   };
 }
 
@@ -103,9 +107,7 @@ function SelectControl({
     <label className="h3-control">
       <span>{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => (
-          <option key={option} value={option}>{option}</option>
-        ))}
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
   );
@@ -129,14 +131,7 @@ function NumberControl({
   return (
     <label className="h3-control">
       <span>{label}</span>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
+      <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
 }
@@ -158,6 +153,18 @@ function ToggleControl({
   );
 }
 
+function mediaName(file: MediaInput): string {
+  if (!file) return "No file";
+  if (typeof file !== "string") return file.name;
+  try {
+    const url = new URL(file, window.location.origin);
+    const tail = url.pathname.split("/").filter(Boolean).at(-1);
+    return decodeURIComponent(tail || "Processed image");
+  } catch {
+    return "Processed image";
+  }
+}
+
 function MediaSlot({
   label,
   accept,
@@ -167,14 +174,18 @@ function MediaSlot({
 }: {
   label: string;
   accept: string;
-  file: File | null;
-  onChange: (file: File | null) => void;
+  file: MediaInput;
+  onChange: (file: MediaInput) => void;
   imagePreview?: boolean;
 }) {
   const [preview, setPreview] = useState("");
   useEffect(() => {
     if (!file || !imagePreview) {
       setPreview("");
+      return;
+    }
+    if (typeof file === "string") {
+      setPreview(file);
       return;
     }
     const url = URL.createObjectURL(file);
@@ -188,16 +199,8 @@ function MediaSlot({
         <span>{label}</span>
         {file && <button type="button" onClick={() => onChange(null)}>Remove</button>}
       </div>
-      {preview ? (
-        <img src={preview} alt="" />
-      ) : (
-        <div className="h3-media-placeholder">{file ? file.name : "No file"}</div>
-      )}
-      <input
-        type="file"
-        accept={accept}
-        onChange={(event) => onChange(event.target.files?.[0] ?? null)}
-      />
+      {preview ? <img src={preview} alt="" /> : <div className="h3-media-placeholder">{mediaName(file)}</div>}
+      <input type="file" accept={accept} onChange={(event) => onChange(event.target.files?.[0] ?? null)} />
     </div>
   );
 }
@@ -220,13 +223,8 @@ function OutputWorkspace({
   return (
     <section className="panel h3-output-panel">
       <div className="section-heading">
-        <div>
-          <span className="eyebrow">Output</span>
-          <h2>{resultFormat}</h2>
-        </div>
-        <span className={`connection-pill ${running ? "" : "offline"}`}>
-          {running ? "Working" : "Idle"}
-        </span>
+        <div><span className="eyebrow">Output</span><h2>{resultFormat}</h2></div>
+        <span className={`connection-pill ${running ? "" : "offline"}`}>{running ? "Working" : "Idle"}</span>
       </div>
 
       {resultFormat === "Video" && (
@@ -238,11 +236,7 @@ function OutputWorkspace({
               <a href={url}>Download</a>
             </div>
           )) : (
-            <div className="empty-state h3-output-empty">
-              <span className={`status-dot ${running ? "active" : ""}`} />
-              <strong>{running ? "H3 is generating" : "No video yet"}</strong>
-              <span>Up to four independent-seed variants can appear here.</span>
-            </div>
+            <div className="empty-state h3-output-empty"><span className={`status-dot ${running ? "active" : ""}`} /><strong>{running ? "H3 is generating" : "No video yet"}</strong><span>Up to four independent-seed variants can appear here.</span></div>
           )}
         </div>
       )}
@@ -250,60 +244,74 @@ function OutputWorkspace({
       {resultFormat === "Image" && (
         <div className="h3-image-results">
           {update.images.length ? update.images.map((url, index) => (
-            <a href={url} key={`${url}-${index}`} className="h3-image-card" target="_blank" rel="noreferrer">
-              <img src={url} alt={`H3 frame ${index + 1}`} />
-              <span>Frame {index + 1}</span>
-            </a>
+            <a href={url} key={`${url}-${index}`} className="h3-image-card" target="_blank" rel="noreferrer"><img src={url} alt={`H3 frame ${index + 1}`} /><span>Frame {index + 1}</span></a>
           )) : (
-            <div className="empty-state h3-output-empty">
-              <strong>{running ? "Decoding image frames…" : "No images yet"}</strong>
-              <span>Decoded H3 frames will appear as a selectable visual grid.</span>
-            </div>
+            <div className="empty-state h3-output-empty"><strong>{running ? "Decoding image frames…" : "No images yet"}</strong><span>Decoded H3 frames will appear as a visual grid.</span></div>
           )}
         </div>
       )}
 
       {resultFormat === "Audio" && (
         <div className="h3-audio-stage">
-          {update.audioUrl ? <audio src={update.audioUrl} controls preload="metadata" /> : (
-            <div className="empty-state">
-              <strong>{running ? "Decoding audio…" : "No audio yet"}</strong>
-              <span>The native H3 audio result will appear here.</span>
-            </div>
-          )}
+          {update.audioUrl ? <audio src={update.audioUrl} controls preload="metadata" /> : <div className="empty-state"><strong>{running ? "Decoding audio…" : "No audio yet"}</strong><span>The native H3 audio result will appear here.</span></div>}
         </div>
       )}
 
       <div className="status-card h3-status-card">
         <div className="status-title">{update.status || "Ready"}</div>
-        {(update.queuePosition != null || update.queueSize != null) && (
-          <div className="status-meta">
-            Queue {update.queuePosition != null ? update.queuePosition + 1 : "–"}
-            {update.queueSize != null ? ` / ${update.queueSize}` : ""}
-          </div>
-        )}
+        {(update.queuePosition != null || update.queueSize != null) && <div className="status-meta">Queue {update.queuePosition != null ? update.queuePosition + 1 : "–"}{update.queueSize != null ? ` / ${update.queueSize}` : ""}</div>}
       </div>
     </section>
   );
 }
 
 export function CreateView() {
-  const catalogQuery = useQuery({
-    queryKey: ["studio-catalog"],
-    queryFn: studioCatalog,
-    staleTime: 60_000,
-  });
+  const catalogQuery = useQuery({ queryKey: ["studio-catalog"], queryFn: studioCatalog, staleTime: 60_000 });
   const catalog = catalogQuery.data?.h3;
   const [request, setRequest] = useState<H3AdvancedRequest | null>(null);
   const [running, setRunning] = useState(false);
-  const [update, setUpdate] = useState<H3GenerateUpdate>({
-    videos: [], images: [], audioUrl: "", status: "Ready",
-  });
+  const [update, setUpdate] = useState<H3GenerateUpdate>({ videos: [], images: [], audioUrl: "", status: "Ready" });
   const [error, setError] = useState("");
   const controllerRef = useRef<AbortController | null>(null);
 
+  const [writerBackend, setWriterBackend] = useState("");
+  const [localWriterModel, setLocalWriterModel] = useState("");
+  const [localMaxTokens, setLocalMaxTokens] = useState(4096);
+  const [localTemperature, setLocalTemperature] = useState(.7);
+  const [localTopP, setLocalTopP] = useState(.8);
+  const [localGreedy, setLocalGreedy] = useState(true);
+  const [localSeed, setLocalSeed] = useState(42);
+  const [geminiModel, setGeminiModel] = useState("");
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [lightningApiKey, setLightningApiKey] = useState("");
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhanceStatus, setEnhanceStatus] = useState("");
+
+  const [inputUpscaleSlots, setInputUpscaleSlots] = useState<string[]>([]);
+  const [inputUpscaleModel, setInputUpscaleModel] = useState("");
+  const [inputUpscaleSeed, setInputUpscaleSeed] = useState(-1);
+  const [inputUpscaleForceOffload, setInputUpscaleForceOffload] = useState(false);
+  const [inputUpscalePreset, setInputUpscalePreset] = useState("");
+  const [inputFrameWidth, setInputFrameWidth] = useState(1920);
+  const [inputFrameHeight, setInputFrameHeight] = useState(1920);
+  const [inputUpscaling, setInputUpscaling] = useState(false);
+  const [inputUpscaleStatus, setInputUpscaleStatus] = useState("");
+  const inputUpscaleControllerRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
-    if (catalog && !request) setRequest(initialRequest(catalog));
+    if (!catalog || request) return;
+    setRequest(initialRequest(catalog));
+    setWriterBackend(catalog.prompt_writer.default_backend);
+    setLocalWriterModel(catalog.prompt_writer.default_local_model);
+    setGeminiModel(catalog.prompt_writer.default_gemini_model);
+    setInputUpscaleModel(catalog.defaults.seedvr2_model);
+    const preset = catalog.input_upscale.default_frame_preset;
+    setInputUpscalePreset(preset);
+    const size = catalog.input_upscale.frame_presets[preset];
+    if (size) {
+      setInputFrameWidth(size[0]);
+      setInputFrameHeight(size[1]);
+    }
   }, [catalog, request]);
 
   const set = <K extends keyof H3AdvancedRequest>(key: K, value: H3AdvancedRequest[K]) => {
@@ -336,6 +344,7 @@ export function CreateView() {
   const usesEasyCache = request.cacheMode === "EasyCache";
   const postprocessActive = request.postprocess !== "None";
   const ltxPostprocess = request.postprocess.toLowerCase().includes("ltx");
+  const busy = running || enhancing || inputUpscaling;
 
   const validationError = (() => {
     if (!request.prompt.trim()) return "Prompt is required.";
@@ -344,8 +353,15 @@ export function CreateView() {
     return "";
   })();
 
+  const slotSource = (slot: string): MediaInput => {
+    if (slot === "First frame") return request.firstImage;
+    if (slot === "Last frame") return request.lastImage;
+    const match = /^Picture (\d+)$/.exec(slot);
+    return match ? request.referenceImages[Number(match[1]) - 1] ?? null : null;
+  };
+
   const generate = async () => {
-    if (validationError || running) {
+    if (validationError || busy) {
       setError(validationError);
       return;
     }
@@ -375,6 +391,91 @@ export function CreateView() {
     }
   };
 
+  const enhancePrompt = async () => {
+    if (busy || !writerBackend) return;
+    setEnhancing(true);
+    setError("");
+    setEnhanceStatus("Enhancing H3 prompt…");
+    try {
+      const result = await enhanceH3Prompt({
+        generation: request,
+        backend: writerBackend,
+        localBaseModel: localWriterModel,
+        localMaxNewTokens: localMaxTokens,
+        localTemperature,
+        localTopP,
+        localGreedy,
+        localSeed,
+        geminiModel,
+        geminiApiKey,
+        lightningApiKey,
+      });
+      if (result.prompt) set("prompt", result.prompt);
+      setEnhanceStatus(result.status || "Prompt updated.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setEnhanceStatus("");
+    } finally {
+      setEnhancing(false);
+    }
+  };
+
+  const applyInputPreset = (preset: string) => {
+    setInputUpscalePreset(preset);
+    const size = catalog.input_upscale.frame_presets[preset];
+    if (size) {
+      setInputFrameWidth(size[0]);
+      setInputFrameHeight(size[1]);
+    }
+  };
+
+  const runInputUpscale = async () => {
+    if (busy || !inputUpscaleSlots.length) return;
+    const invalidSlot = inputUpscaleSlots.find((slot) => !slotSource(slot));
+    if (invalidSlot) {
+      setError(`${invalidSlot} has no image to upscale.`);
+      return;
+    }
+    const controller = new AbortController();
+    inputUpscaleControllerRef.current = controller;
+    setInputUpscaling(true);
+    setError("");
+    setInputUpscaleStatus("Submitting SeedVR2 input upscale…");
+    try {
+      const result = await upscaleH3InputImages({
+        generation: request,
+        selectedSlots: inputUpscaleSlots,
+        model: inputUpscaleModel,
+        seed: inputUpscaleSeed,
+        forceOffload: inputUpscaleForceOffload,
+        frameWidth: inputFrameWidth,
+        frameHeight: inputFrameHeight,
+      }, (next) => setInputUpscaleStatus(next.status), controller.signal);
+      setRequest((current) => current ? {
+        ...current,
+        firstImage: result.firstImage,
+        lastImage: result.lastImage,
+        referenceImages: result.referenceImages,
+      } : current);
+      setInputUpscaleStatus(result.status || "Input images updated.");
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (inputUpscaleControllerRef.current === controller) inputUpscaleControllerRef.current = null;
+      setInputUpscaling(false);
+    }
+  };
+
+  const stopInputUpscale = async () => {
+    inputUpscaleControllerRef.current?.abort();
+    try {
+      const message = await cancelH3InputUpscale();
+      setInputUpscaleStatus(message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   const applyResolution = (value: string) => {
     const size = catalog.resolutions.fast[value] || catalog.resolutions.draft[value] || catalog.resolutions.large[value];
     if (!size) return;
@@ -387,7 +488,7 @@ export function CreateView() {
         <section className="panel composer-panel h3-composer-panel">
           <div className="section-heading">
             <div><span className="eyebrow">MiniMax H3</span><h2>Create</h2></div>
-            <span className="badge">Advanced API · same runtime</span>
+            <span className="badge">Full H3 API · same runtime</span>
           </div>
 
           <div className="h3-mode-grid">
@@ -401,13 +502,29 @@ export function CreateView() {
           </div>
 
           <label className="field-label" htmlFor="h3-prompt">Prompt</label>
-          <textarea
-            id="h3-prompt"
-            className="prompt-box h3-prompt-box"
-            value={request.prompt}
-            onChange={(event) => set("prompt", event.target.value)}
-            placeholder="Describe shots, camera motion, dialogue, ambience, sound effects and music…"
-          />
+          <textarea id="h3-prompt" className="prompt-box h3-prompt-box" value={request.prompt} onChange={(event) => set("prompt", event.target.value)} placeholder="Describe shots, camera motion, dialogue, ambience, sound effects and music…" />
+
+          <details className="studio-tool-details h3-tool-details">
+            <summary>Prompt writer / enhancer</summary>
+            <div className="tool-control-grid">
+              <label><span>Writer</span><select value={writerBackend} onChange={(event) => setWriterBackend(event.target.value)}>{catalog.prompt_writer.backends.map((choice) => <option key={choice}>{choice}</option>)}</select></label>
+              {writerBackend === "Local MiniMax-H3 8B" && <label><span>Local model</span><select value={localWriterModel} onChange={(event) => setLocalWriterModel(event.target.value)}>{catalog.prompt_writer.local_models.map((choice) => <option key={choice}>{choice}</option>)}</select></label>}
+              {writerBackend === "Gemini" && <label><span>Gemini model</span><select value={geminiModel} onChange={(event) => setGeminiModel(event.target.value)}>{catalog.prompt_writer.gemini_models.map((choice) => <option key={choice}>{choice}</option>)}</select></label>}
+              {writerBackend === "Gemini" && <label><span>Temporary Gemini key</span><input type="password" value={geminiApiKey} onChange={(event) => setGeminiApiKey(event.target.value)} placeholder="Uses GEMINI_API_KEY when blank" /></label>}
+              {writerBackend === "Lightning AI" && <label><span>Temporary Lightning key</span><input type="password" value={lightningApiKey} onChange={(event) => setLightningApiKey(event.target.value)} placeholder="Uses LIGHTNING_API_KEY when blank" /></label>}
+            </div>
+            {writerBackend === "Local MiniMax-H3 8B" && (
+              <div className="tool-control-grid compact-tool-grid">
+                <NumberControl label="Max tokens" value={localMaxTokens} min={256} max={8192} step={256} onChange={setLocalMaxTokens} />
+                <NumberControl label="Temperature" value={localTemperature} min={.1} max={2} step={.1} onChange={setLocalTemperature} />
+                <NumberControl label="Top-p" value={localTopP} min={.05} max={1} step={.05} onChange={setLocalTopP} />
+                <NumberControl label="Writer seed" value={localSeed} onChange={setLocalSeed} />
+                <ToggleControl label="Greedy decoding" checked={localGreedy} onChange={setLocalGreedy} />
+              </div>
+            )}
+            <div className="button-row"><button className="secondary-button" disabled={busy || !writerBackend} onClick={enhancePrompt}>{enhancing ? "Enhancing…" : "Generate / enhance prompt"}</button></div>
+            {enhanceStatus && <div className="notice compact">{enhanceStatus}</div>}
+          </details>
 
           {isFirstLast && (
             <div className="h3-media-section">
@@ -419,9 +536,7 @@ export function CreateView() {
               <details className="h3-details compact-details">
                 <summary>Optional FL2VA voice references</summary>
                 <div className="h3-media-grid three">
-                  {request.fl2vaAudios.map((file, index) => (
-                    <MediaSlot key={index} label={`Voice ${index + 1} · <Audio ${index + 1}>`} accept="audio/*" file={file} onChange={(next) => set("fl2vaAudios", replaceAt(request.fl2vaAudios, index, next))} />
-                  ))}
+                  {request.fl2vaAudios.map((file, index) => <MediaSlot key={index} label={`Voice ${index + 1} · <Audio ${index + 1}>`} accept="audio/*" file={file} onChange={(next) => set("fl2vaAudios", replaceAt(request.fl2vaAudios, index, next))} />)}
                 </div>
               </details>
             </div>
@@ -433,29 +548,48 @@ export function CreateView() {
               <details className="h3-details" open>
                 <summary>Reference images · up to 9</summary>
                 <div className="h3-media-grid three">
-                  {request.referenceImages.map((file, index) => (
-                    <MediaSlot key={index} label={`Picture ${index + 1}`} accept="image/*" file={file} onChange={(next) => set("referenceImages", replaceAt(request.referenceImages, index, next))} imagePreview />
-                  ))}
+                  {request.referenceImages.map((file, index) => <MediaSlot key={index} label={`Picture ${index + 1}`} accept="image/*" file={file} onChange={(next) => set("referenceImages", replaceAt(request.referenceImages, index, next))} imagePreview />)}
                 </div>
               </details>
               <details className="h3-details">
                 <summary>Reference videos · up to 3</summary>
-                <div className="h3-media-grid three">
-                  {request.referenceVideos.map((file, index) => (
-                    <MediaSlot key={index} label={`Video ${index + 1}`} accept="video/*" file={file} onChange={(next) => set("referenceVideos", replaceAt(request.referenceVideos, index, next))} />
-                  ))}
-                </div>
+                <div className="h3-media-grid three">{request.referenceVideos.map((file, index) => <MediaSlot key={index} label={`Video ${index + 1}`} accept="video/*" file={file} onChange={(next) => set("referenceVideos", replaceAt(request.referenceVideos, index, next))} />)}</div>
               </details>
               <details className="h3-details">
                 <summary>Reference audio · up to 3</summary>
-                <div className="h3-media-grid three">
-                  {request.referenceAudios.map((file, index) => (
-                    <MediaSlot key={index} label={`Audio ${index + 1}`} accept="audio/*" file={file} onChange={(next) => set("referenceAudios", replaceAt(request.referenceAudios, index, next))} />
-                  ))}
-                </div>
+                <div className="h3-media-grid three">{request.referenceAudios.map((file, index) => <MediaSlot key={index} label={`Audio ${index + 1}`} accept="audio/*" file={file} onChange={(next) => set("referenceAudios", replaceAt(request.referenceAudios, index, next))} />)}</div>
               </details>
             </div>
           )}
+
+          <details className="studio-tool-details h3-tool-details">
+            <summary>Upscale input images with SeedVR2</summary>
+            <p className="tool-description">Upscale selected First/Last/Picture inputs on the existing GPU queue and replace those slots in-place. The processed images are immediately reused by H3 generation.</p>
+            <div className="input-upscale-slot-grid">
+              {catalog.input_upscale.slots.map((slot) => {
+                const available = Boolean(slotSource(slot));
+                return (
+                  <label key={slot} className={`slot-check ${available ? "" : "disabled"}`}>
+                    <input type="checkbox" checked={inputUpscaleSlots.includes(slot)} disabled={!available || inputUpscaling} onChange={(event) => setInputUpscaleSlots((current) => event.target.checked ? [...current, slot] : current.filter((value) => value !== slot))} />
+                    <span>{slot}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="tool-control-grid">
+              <label><span>Frame preset</span><select value={inputUpscalePreset} onChange={(event) => applyInputPreset(event.target.value)}>{Object.keys(catalog.input_upscale.frame_presets).map((choice) => <option key={choice}>{choice}</option>)}</select></label>
+              <label><span>SeedVR2 model</span><select value={inputUpscaleModel} onChange={(event) => setInputUpscaleModel(event.target.value)}>{choices.seedvr2_models.map((choice) => <option key={choice}>{choice}</option>)}</select></label>
+              <NumberControl label="Frame width" value={inputFrameWidth} min={1} onChange={setInputFrameWidth} />
+              <NumberControl label="Frame height" value={inputFrameHeight} min={1} onChange={setInputFrameHeight} />
+              <NumberControl label="Seed" value={inputUpscaleSeed} onChange={setInputUpscaleSeed} />
+              <ToggleControl label="Unload resident models first" checked={inputUpscaleForceOffload} onChange={setInputUpscaleForceOffload} />
+            </div>
+            <div className="button-row">
+              <button className="secondary-button" disabled={busy || !inputUpscaleSlots.length || !inputUpscaleModel} onClick={runInputUpscale}>{inputUpscaling ? "Upscaling…" : "Upscale selected inputs"}</button>
+              <button className="secondary-button" disabled={!inputUpscaling} onClick={stopInputUpscale}>Stop input upscale</button>
+            </div>
+            {inputUpscaleStatus && <div className="notice compact">{inputUpscaleStatus}</div>}
+          </details>
 
           <div className="h3-essentials">
             <div className="h3-subheading"><strong>Output essentials</strong><span>Common controls stay visible; everything else is below.</span></div>
@@ -564,18 +698,14 @@ export function CreateView() {
           </details>
 
           <div className="h3-action-bar">
-            <div>
-              <strong>{request.mode} · {request.resultFormat}</strong>
-              <span>{request.width}×{request.height} · {request.steps} steps · {request.generationMode}</span>
-            </div>
+            <div><strong>{request.mode} · {request.resultFormat}</strong><span>{request.width}×{request.height} · {request.steps} steps · {request.generationMode}</span></div>
             <div className="button-row h3-action-buttons">
-              <button className="primary-button" onClick={generate} disabled={running || Boolean(validationError)}>{running ? "Generating…" : `Generate ${request.resultFormat.toLowerCase()}`}</button>
+              <button className="primary-button" onClick={generate} disabled={busy || Boolean(validationError)}>{running ? "Generating…" : `Generate ${request.resultFormat.toLowerCase()}`}</button>
               <button className="secondary-button" onClick={stop} disabled={!running}>Stop</button>
             </div>
           </div>
           {validationError && <div className="error-text">{validationError}</div>}
           {error && !validationError && <div className="error-text">{error}</div>}
-          <div className="notice compact">Prompt enhancement and pre-generation SeedVR2 input upscaling remain separate tools to migrate next; the generation controls above already call the existing full H3 advanced endpoint.</div>
         </section>
 
         <OutputWorkspace update={update} running={running} resultFormat={request.resultFormat} />
