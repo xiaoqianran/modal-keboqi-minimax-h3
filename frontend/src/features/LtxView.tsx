@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   cancelLtx25,
+  enhanceLtx25Prompt,
   generateLtx25,
   ltxInventory,
   prepareAllLtxModels,
@@ -70,6 +71,10 @@ export function LtxView() {
   const [mode, setMode] = useState<"Text to video" | "Image to video">("Text to video");
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [promptModel, setPromptModel] = useState("");
+  const [promptApiKey, setPromptApiKey] = useState("");
+  const [enhanceStatus, setEnhanceStatus] = useState("");
+  const [enhancing, setEnhancing] = useState(false);
   const [duration, setDuration] = useState(5);
   const [fps, setFps] = useState(24);
   const [width, setWidth] = useState(960);
@@ -106,9 +111,10 @@ export function LtxView() {
     setMiddleTime(defaults.middle_time);
     setMiddleStrength(defaults.middle_strength);
     setEndStrength(defaults.end_strength);
+    setPromptModel(catalog?.default_prompt_model ?? "");
     setWorkflowName(catalog?.workflows[0]?.name ?? "");
     setInitialized(true);
-  }, [catalog?.workflows, defaults, initialized]);
+  }, [catalog?.default_prompt_model, catalog?.workflows, defaults, initialized]);
 
   const selectedWorkflow = useMemo(
     () => catalog?.workflows.find((workflow) => workflow.name === workflowName) ?? null,
@@ -130,6 +136,44 @@ export function LtxView() {
     },
   });
 
+  const currentRequest = (): Ltx25Request => ({
+    mode,
+    model,
+    prompt: prompt.trim(),
+    negativePrompt: negativePrompt.trim(),
+    firstImage: mode === "Image to video" ? firstImage : null,
+    duration,
+    fps,
+    width,
+    height,
+    seed,
+    cfg,
+    sampler,
+    imageStrength,
+    middleImage: mode === "Image to video" ? middleImage : null,
+    middleTime,
+    middleStrength,
+    endImage: mode === "Image to video" ? endImage : null,
+    endStrength,
+  });
+
+  const enhance = async () => {
+    if (!promptModel || enhancing || running) return;
+    setEnhancing(true);
+    setError("");
+    setEnhanceStatus("Enhancing LTX prompt…");
+    try {
+      const result = await enhanceLtx25Prompt(prompt, promptModel, promptApiKey, currentRequest());
+      if (result.prompt) setPrompt(result.prompt);
+      setEnhanceStatus(result.status || "Prompt updated.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setEnhanceStatus("");
+    } finally {
+      setEnhancing(false);
+    }
+  };
+
   const generate = async () => {
     if (!prompt.trim() || !model || running) return;
     if (mode === "Image to video" && !firstImage) {
@@ -142,29 +186,8 @@ export function LtxView() {
     const controller = new AbortController();
     controllerRef.current = controller;
 
-    const request: Ltx25Request = {
-      mode,
-      model,
-      prompt: prompt.trim(),
-      negativePrompt: negativePrompt.trim(),
-      firstImage: mode === "Image to video" ? firstImage : null,
-      duration,
-      fps,
-      width,
-      height,
-      seed,
-      cfg,
-      sampler,
-      imageStrength,
-      middleImage: mode === "Image to video" ? middleImage : null,
-      middleTime,
-      middleStrength,
-      endImage: mode === "Image to video" ? endImage : null,
-      endStrength,
-    };
-
     try {
-      const finalUpdate = await generateLtx25(request, setUpdate, controller.signal);
+      const finalUpdate = await generateLtx25(currentRequest(), setUpdate, controller.signal);
       setUpdate(finalUpdate);
     } catch (cause) {
       if (!controller.signal.aborted) {
@@ -219,6 +242,17 @@ export function LtxView() {
 
           <label className="field-label" htmlFor="ltx-prompt">Positive prompt</label>
           <textarea id="ltx-prompt" className="prompt-box ltx-prompt-box" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Describe action chronologically, then setting, camera, lighting, dialogue, sound effects and music…" />
+
+          <details className="studio-tool-details">
+            <summary>Gemini LTX prompt writer</summary>
+            <div className="tool-control-grid">
+              <label><span>Gemini model</span><select value={promptModel} onChange={(event) => setPromptModel(event.target.value)}>{catalog?.prompt_models.map((choice) => <option key={choice}>{choice}</option>)}</select></label>
+              <label><span>Temporary API key</span><input type="password" value={promptApiKey} onChange={(event) => setPromptApiKey(event.target.value)} placeholder="Uses GEMINI_API_KEY when blank" /></label>
+            </div>
+            <div className="button-row"><button className="secondary-button" disabled={enhancing || running || !promptModel} onClick={enhance}>{enhancing ? "Enhancing…" : "Generate / enhance prompt"}</button></div>
+            {enhanceStatus && <div className="notice compact">{enhanceStatus}</div>}
+          </details>
+
           <label className="field-label ltx-negative-label" htmlFor="ltx-negative">Negative prompt</label>
           <textarea id="ltx-negative" className="prompt-box ltx-negative-box" value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="Optional artifacts or qualities to avoid…" />
 
