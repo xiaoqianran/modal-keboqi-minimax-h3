@@ -6,6 +6,8 @@ export type StudioSection =
   | "music"
   | "system";
 
+export type MediaInput = File | string | null;
+
 export interface GenerateUpdate {
   outputUrl: string;
   status: string;
@@ -122,6 +124,12 @@ export interface H3PromptWriterCatalog {
   lightning_model: string;
 }
 
+export interface H3InputUpscaleCatalog {
+  slots: string[];
+  frame_presets: Record<string, [number, number] | null>;
+  default_frame_preset: string;
+}
+
 export interface H3Catalog {
   defaults: H3Defaults;
   choices: H3Choices;
@@ -131,6 +139,7 @@ export interface H3Catalog {
     large: Record<string, [number, number]>;
   };
   prompt_writer: H3PromptWriterCatalog;
+  input_upscale: H3InputUpscaleCatalog;
 }
 
 export interface H3AdvancedRequest {
@@ -142,11 +151,11 @@ export interface H3AdvancedRequest {
   generationMode: string;
   turboVariant: string;
   prompt: string;
-  firstImage: File | null;
-  lastImage: File | null;
-  referenceImages: Array<File | null>;
-  referenceVideos: Array<File | null>;
-  referenceAudios: Array<File | null>;
+  firstImage: MediaInput;
+  lastImage: MediaInput;
+  referenceImages: MediaInput[];
+  referenceVideos: MediaInput[];
+  referenceAudios: MediaInput[];
   duration: number;
   width: number;
   height: number;
@@ -200,7 +209,7 @@ export interface H3AdvancedRequest {
   imageFrames: number;
   semanticBridge: boolean;
   semanticBridgeAlpha: number;
-  fl2vaAudios: Array<File | null>;
+  fl2vaAudios: MediaInput[];
 }
 
 export interface H3PromptEnhanceRequest {
@@ -219,6 +228,24 @@ export interface H3PromptEnhanceRequest {
 
 export interface H3PromptEnhanceResult {
   prompt: string;
+  status: string;
+}
+
+export interface H3InputUpscaleRequest {
+  generation: H3AdvancedRequest;
+  selectedSlots: string[];
+  model: string;
+  seed: number;
+  forceOffload: boolean;
+  frameWidth: number;
+  frameHeight: number;
+}
+
+export interface H3InputUpscaleResult {
+  firstImage: MediaInput;
+  lastImage: MediaInput;
+  referenceImages: MediaInput[];
+  files: string[];
   status: string;
 }
 
@@ -260,6 +287,40 @@ export interface GallerySnapshot {
   items: GalleryItem[];
 }
 
+export interface GalleryCatalog {
+  postprocess_options: string[];
+  ai_postprocess_options: string[];
+  seedvr2_option: string;
+  ltx25_option: string;
+  default_upscale_resolution: string;
+  default_seedvr2_model: string;
+  default_ltx25_model: string;
+  upscale_resolutions: string[];
+  seedvr2_models: string[];
+  ltx25_models: string[];
+}
+
+export interface GalleryPostprocessRequest {
+  selectedPath: string;
+  option: string;
+  seed: number;
+  seedvr2Model: string;
+  ltx25Model: string;
+  ltx25Prompt: string;
+  forceOffload: boolean;
+  splitUpscale: boolean;
+  splitSeconds: number;
+  upscaleResolution: string;
+}
+
+export interface GalleryPostprocessUpdate {
+  status: string;
+  selected_path?: string;
+  queuePosition?: number;
+  queueSize?: number;
+  stage?: string;
+}
+
 export interface Music3Defaults {
   model: string;
   duration: number;
@@ -297,9 +358,12 @@ export interface LtxWorkflowSummary {
 
 export interface StudioCatalog {
   h3: H3Catalog;
+  gallery: GalleryCatalog;
   music3: {
     models: string[];
     defaults: Music3Defaults;
+    prompt_models: string[];
+    default_prompt_model: string;
   };
   ltx25: {
     models: string[];
@@ -323,6 +387,12 @@ export interface Music3Request {
   tiledDecode: boolean;
 }
 
+export interface MusicPromptEnhanceResult {
+  caption: string;
+  lyrics: string;
+  status: string;
+}
+
 export interface Ltx25Request {
   mode: "Text to video" | "Image to video";
   model: string;
@@ -342,6 +412,11 @@ export interface Ltx25Request {
   middleStrength: number;
   endImage: File | null;
   endStrength: number;
+}
+
+export interface PromptEnhanceResult {
+  prompt: string;
+  status: string;
 }
 
 export interface LtxInventory {
