@@ -4,6 +4,7 @@ import type { StudioSection } from "./api/types";
 import { BatchView } from "./features/BatchView";
 import { CreateView } from "./features/CreateView";
 import { GalleryView } from "./features/GalleryView";
+import { MusicView } from "./features/MusicView";
 import { PlaceholderView } from "./features/PlaceholderView";
 import { SystemView } from "./features/SystemView";
 
@@ -24,6 +25,8 @@ function page(section: StudioSection) {
       return <BatchView />;
     case "gallery":
       return <GalleryView />;
+    case "music":
+      return <MusicView />;
     case "system":
       return <SystemView />;
     case "ltx":
@@ -33,15 +36,6 @@ function page(section: StudioSection) {
           title="LTX 2.5"
           description="LTX remains a first-class workspace. The new page will expose the current official workflows and model preparation controls through typed adapters."
           items={["Text / image to video", "Two-stage upscale", "Audio-to-video", "IC-LoRA workflows"]}
-        />
-      );
-    case "music":
-      return (
-        <PlaceholderView
-          eyebrow="MiniMax"
-          title="Music 3"
-          description="Music 3 keeps its dedicated generation surface rather than being squeezed into H3 Create."
-          items={["Caption & lyrics", "Prompt enhancement", "Duration / CFG / Top-K", "Audio preview & download"]}
         />
       );
   }
