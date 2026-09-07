@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { StudioSection } from "./api/types";
 import { BatchView } from "./features/BatchView";
 import { CreateView } from "./features/CreateView";
+import { GalleryImportPanel } from "./features/GalleryImportPanel";
 import { GalleryView } from "./features/GalleryView";
 import { LtxView } from "./features/LtxView";
 import { MusicView } from "./features/MusicView";
@@ -11,7 +12,7 @@ import { SystemView } from "./features/SystemView";
 const NAV: Array<{ id: StudioSection; label: string; hint: string }> = [
   { id: "create", label: "Create", hint: "H3 generation" },
   { id: "batch", label: "Batch", hint: "Persistent queue" },
-  { id: "gallery", label: "Gallery", hint: "Outputs & metadata" },
+  { id: "gallery", label: "Gallery", hint: "Outputs, import & finishing" },
   { id: "ltx", label: "LTX 2.5", hint: "Video workflows" },
   { id: "music", label: "Music 3", hint: "Audio generation" },
   { id: "system", label: "System", hint: "Runtime status" },
@@ -24,7 +25,12 @@ function page(section: StudioSection) {
     case "batch":
       return <BatchView />;
     case "gallery":
-      return <GalleryView />;
+      return (
+        <div className="stack-page">
+          <GalleryImportPanel />
+          <GalleryView />
+        </div>
+      );
     case "ltx":
       return <LtxView />;
     case "music":
