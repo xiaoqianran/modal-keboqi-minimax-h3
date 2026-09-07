@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 import gradio as gr
 
 from .batch_view import _MANAGER, _owner, _parse_prompts
+from .job_bindings import owned_generation
 
 
 def _batch_payload(owner: str, selected_batch_id: str | None = None) -> dict[str, Any]:
@@ -50,6 +51,12 @@ def _relative_app_url(url: str) -> str:
     if not parsed.scheme and not parsed.netloc:
         return str(url or "")
     return urlunsplit(("", "", parsed.path or "/", parsed.query, parsed.fragment))
+
+
+def _update_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get("value")
+    return value
 
 
 def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any]:
@@ -140,10 +147,32 @@ def studio_catalog() -> dict[str, Any]:
                 "default_gemini_model": legacy.DEFAULT_GEMINI_PROMPT_MODEL,
                 "lightning_model": legacy.LIGHTNING_PROMPT_MODEL,
             },
+            "input_upscale": {
+                "slots": list(legacy.INPUT_IMAGE_UPSCALE_SLOTS),
+                "frame_presets": {
+                    name: list(size) if size is not None else None
+                    for name, size in legacy.INPUT_IMAGE_FRAME_PRESETS.items()
+                },
+                "default_frame_preset": legacy.DEFAULT_INPUT_IMAGE_FRAME_PRESET,
+            },
+        },
+        "gallery": {
+            "postprocess_options": list(legacy.POSTPROCESS_OPTIONS),
+            "ai_postprocess_options": list(legacy.AI_POSTPROCESS_OPTIONS),
+            "seedvr2_option": legacy.SEEDVR2_UPSCALE,
+            "ltx25_option": legacy.LTX25_UPSCALE,
+            "default_upscale_resolution": legacy.DEFAULT_UPSCALE_RESOLUTION,
+            "default_seedvr2_model": legacy.DEFAULT_SEEDVR2_MODEL,
+            "default_ltx25_model": legacy.DEFAULT_LTX25_MODEL,
+            "upscale_resolutions": list(legacy.UPSCALE_RESOLUTION_PRESETS),
+            "seedvr2_models": list(legacy.SEEDVR2_MODEL_CHOICES),
+            "ltx25_models": list(legacy.LTX25_MODEL_CHOICES),
         },
         "music3": {
             "models": list(legacy.MUSIC3_MODEL_CHOICES),
             "defaults": dict(legacy.MUSIC3_DEFAULTS),
+            "prompt_models": list(legacy.GEMINI_PROMPT_MODELS),
+            "default_prompt_model": legacy.DEFAULT_GEMINI_PROMPT_MODEL,
         },
         "ltx25": {
             "models": list(legacy.LTX25_MODEL_CHOICES),
@@ -204,12 +233,20 @@ def studio_h3_cancel(request: gr.Request) -> dict[str, str]:
     return _cancel_family(request, "h3")
 
 
+def studio_h3_input_cancel(request: gr.Request) -> dict[str, str]:
+    return _cancel_family(request, "h3-input")
+
+
 def studio_ltx_cancel(request: gr.Request) -> dict[str, str]:
     return _cancel_family(request, "ltx")
 
 
 def studio_music_cancel(request: gr.Request) -> dict[str, str]:
     return _cancel_family(request, "music")
+
+
+def studio_gallery_cancel(request: gr.Request) -> dict[str, str]:
+    return _cancel_family(request, "gallery")
 
 
 def studio_gallery_list(request: gr.Request) -> dict[str, Any]:
@@ -230,6 +267,47 @@ def studio_gallery_empty(request: gr.Request) -> dict[str, Any]:
     result = legacy.empty_generated_gallery(None, True)
     message = str(result[2]) if len(result) > 2 else "Gallery emptied."
     return _gallery_payload(request, message=message)
+
+
+def studio_gallery_postprocess(
+    selected_video: str,
+    option: str,
+    seed: int,
+    seedvr2_model: str,
+    ltx25_model: str,
+    ltx25_prompt: str,
+    force_offload: bool,
+    split_upscale: bool,
+    split_seconds: float,
+    upscale_resolution: str,
+    request: gr.Request,
+    progress=gr.Progress(track_tqdm=False),
+):
+    """Adapt the existing Gallery generator to one stable JSON stream."""
+    import gradio_app as legacy
+
+    updates = legacy.postprocess_selected_gallery_video(
+        selected_video,
+        option,
+        seed,
+        seedvr2_model,
+        ltx25_model,
+        ltx25_prompt,
+        force_offload,
+        split_upscale,
+        split_seconds,
+        upscale_resolution,
+        request,
+        progress,
+    )
+    for update in updates:
+        values = tuple(update) if isinstance(update, (tuple, list)) else (update,)
+        selected = _update_value(values[5]) if len(values) > 5 else None
+        status = values[-1] if values else ""
+        yield {
+            "status": str(status or ""),
+            "selected_path": str(selected or ""),
+        }
 
 
 def studio_ltx_inventory() -> dict[str, str]:
@@ -270,6 +348,15 @@ def build_studio_api() -> None:
         prompts = gr.Textbox()
         batch_id = gr.Textbox()
         gallery_video = gr.Textbox()
+        gallery_option = gr.Textbox()
+        gallery_seed = gr.Number()
+        gallery_seedvr2_model = gr.Textbox()
+        gallery_ltx25_model = gr.Textbox()
+        gallery_ltx25_prompt = gr.Textbox()
+        gallery_force_offload = gr.Checkbox()
+        gallery_split_upscale = gr.Checkbox()
+        gallery_split_seconds = gr.Number()
+        gallery_upscale_resolution = gr.Textbox()
         workflow_name = gr.Textbox()
         payload = gr.JSON()
 
@@ -319,6 +406,13 @@ def build_studio_api() -> None:
             api_name="studio_h3_cancel",
         )
         gr.Button(visible=False).click(
+            studio_h3_input_cancel,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_h3_input_cancel",
+        )
+        gr.Button(visible=False).click(
             studio_ltx_cancel,
             outputs=payload,
             queue=False,
@@ -331,6 +425,13 @@ def build_studio_api() -> None:
             queue=False,
             show_progress="hidden",
             api_name="studio_music_cancel",
+        )
+        gr.Button(visible=False).click(
+            studio_gallery_cancel,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_gallery_cancel",
         )
         gr.Button(visible=False).click(
             studio_gallery_list,
@@ -353,6 +454,26 @@ def build_studio_api() -> None:
             queue=False,
             show_progress="hidden",
             api_name="studio_gallery_empty",
+        )
+        gr.Button(visible=False).click(
+            owned_generation(studio_gallery_postprocess, "gallery"),
+            inputs=[
+                gallery_video,
+                gallery_option,
+                gallery_seed,
+                gallery_seedvr2_model,
+                gallery_ltx25_model,
+                gallery_ltx25_prompt,
+                gallery_force_offload,
+                gallery_split_upscale,
+                gallery_split_seconds,
+                gallery_upscale_resolution,
+            ],
+            outputs=payload,
+            concurrency_id="h3-gpu",
+            concurrency_limit=1,
+            show_progress="minimal",
+            api_name="studio_gallery_postprocess",
         )
         gr.Button(visible=False).click(
             studio_ltx_inventory,
