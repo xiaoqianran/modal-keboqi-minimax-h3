@@ -1,46 +1,67 @@
 # MiniMax H3 Studio
 
-Standalone React/TypeScript frontend for this repository. It deliberately keeps the proven Python/Gradio/ComfyUI runtime intact and accesses it through a small transport adapter.
-
-## Current vertical slice
-
-- **Create**: submit the existing `/generate_video` generator, receive live queue/generation status, preview output, and request a real backend interrupt.
-- **Batch**: add new prompt groups while earlier batches run, poll the existing persistent queue, inspect items, and cancel one batch without cancelling later batches.
-- **System**: read backend diagnostics and link to fallback Gradio, ComfyUI and the API schema.
-- **Gallery / LTX 2.5 / Music 3**: reserved in the final navigation shell; their existing backend functionality remains available in Gradio until each typed adapter is migrated.
-
-## Development
-
-```bash
-cd frontend
-cp .env.example .env.local
-npm install
-npm run dev
-```
-
-For a remote Modal deployment, set `H3_BACKEND_URL` in `.env.local` to the deployed app URL. Vite proxies `/__h3` to that backend so local development does not require CORS changes.
-
-```env
-H3_BACKEND_URL=https://YOUR-MODAL-APP.modal.run
-VITE_H3_BACKEND=/__h3
-```
-
-Open `http://127.0.0.1:5173`.
+Standalone React frontend for this repository. It keeps the existing Gradio application as the runtime host and fallback/debug surface while providing a dedicated browser UI for day-to-day H3 work.
 
 ## Architecture
 
 ```text
-React views
-   ↓
-frontend/src/api/h3Client.ts
-   ↓
-@gradio/client
-   ↓
-stable Studio JSON endpoints + existing /generate_video
-   ↓
-existing JobCoordinator / BatchQueueManager / generation functions
-   ↓
-ComfyUI → MiniMax H3
+React + TypeScript + Vite
+        |
+        v
+frontend/src/api/*
+        |
+        v
+existing Gradio named APIs + h3_ui/studio_api.py
+        |
+        v
+existing JobCoordinator / BatchQueueManager / generation
+        |
+        v
+ComfyUI -> MiniMax H3 / LTX 2.5 / Music 3
 ```
 
-Only `h3Client.ts` knows the Gradio transport. Feature components consume typed domain functions, which keeps a future REST transport replacement local to one file.
+The Studio does not introduce a second generation runtime, GPU queue, database, or independent FastAPI service.
+
+## Local development against Modal
+
+Copy the environment example:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+Set the deployed backend URL in `.env.local`:
+
+```text
+H3_BACKEND_URL=https://YOUR-MODAL-URL
+VITE_H3_BACKEND=/__h3
+```
+
+Then:
+
+```powershell
+npm install
+npm run dev
+```
+
+Vite serves the frontend on `http://localhost:5173` and proxies `/__h3` to the configured backend. UI development therefore does not require redeploying the Modal GPU container.
+
+## Production checks
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+GitHub Actions runs Python Studio API syntax checks, dependency installation, TypeScript typechecking, and the Vite production build on every frontend change.
+
+## Surfaces
+
+- **Create** — full H3 advanced generation, three conditioning modes, Video/Image/Audio results, prompt writer, reference media, FL2VA voice inputs, performance/cache/attention controls, latent/final upscale, SeedVR2 input upscale, image-frame selection and saving, and safe cancellation.
+- **Batch** — persistent multi-batch queue with continued submission, inspection, per-batch cancellation, and shared single-GPU execution.
+- **Gallery** — managed output browser, preview/download, provenance, local video import, delete/empty actions, interpolation/SeedVR2/LTX post-processing, and independent cancellation.
+- **LTX 2.5** — T2V/I2V generation, start/middle/end keyframes, Gemini prompt writer, model inventory and official workflow model preparation.
+- **Music 3** — generation, lyrics/caption controls, Gemini prompt writer with reference images, preview/download, and cancellation.
+- **System** — backend diagnostics, Gradio/ComfyUI/API links, model unload/free-VRAM action, and TensorRT VAE compilation.
+
+Gradio remains available as a fallback and debugging surface; both UIs operate on the same backend state and generated assets.
