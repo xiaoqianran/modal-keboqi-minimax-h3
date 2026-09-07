@@ -1,0 +1,53 @@
+.h3-image-card.selected {
+  border-color: rgba(141, 124, 255, .5);
+  box-shadow: 0 0 0 2px rgba(141, 124, 255, .08);
+}
+
+.h3-image-card > a {
+  display: block;
+}
+
+.h3-image-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 9px;
+  cursor: pointer;
+}
+
+.h3-image-select input {
+  accent-color: var(--accent);
+}
+
+.h3-image-select span {
+  padding: 0;
+  color: #c9ced7;
+}
+
+.h3-image-save-panel {
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.h3-image-save-actions {
+  margin-top: 0;
+  flex-wrap: wrap;
+}
+
+.h3-saved-image-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.h3-saved-image-links a {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0d1016;
+  font-size: 9px;
+}

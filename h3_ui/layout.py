@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import gradio as gr
 
 from .batch_view import build_batch_view
+from .studio_api import build_studio_api
 
 
 @dataclass(frozen=True)
@@ -42,4 +43,7 @@ def create_app_views() -> AppViews:
             music3 = gr.Group()
         with gr.Tab("API"):
             api = gr.Group()
+
+    # Standalone React Studio endpoints are hidden from the Gradio interface.
+    build_studio_api()
     return AppViews(tabs, generation, ltx25, music3, gallery, api, gallery_tab)

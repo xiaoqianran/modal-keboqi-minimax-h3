@@ -1,0 +1,157 @@
+.ltx-grid {
+  grid-template-columns: minmax(0, 1.15fr) minmax(390px, .85fr);
+}
+
+.ltx-top-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, .55fr) minmax(240px, 1.45fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.ltx-top-controls label > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.ltx-prompt-box {
+  min-height: 210px;
+}
+
+.ltx-negative-label {
+  margin-top: 15px;
+}
+
+.ltx-negative-box {
+  min-height: 90px;
+}
+
+.ltx-keyframes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.ltx-keyframe-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.ltx-keyframe-card > span {
+  color: #bfc5cf;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.ltx-keyframe-preview {
+  min-height: 130px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  background: #090b10;
+}
+
+.ltx-keyframe-preview img {
+  width: 100%;
+  height: 150px;
+  object-fit: cover;
+}
+
+.ltx-keyframe-preview small,
+.ltx-file-name {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ltx-keyframe-card input[type="file"] {
+  width: 100%;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ltx-control-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ltx-preview-panel,
+.ltx-workflow-panel {
+  padding: 20px;
+}
+
+.ltx-video-stage {
+  min-height: 470px;
+}
+
+.ltx-workflow-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, .8fr) minmax(0, 1.2fr);
+  gap: 16px;
+}
+
+.ltx-workflow-detail {
+  display: grid;
+  gap: 6px;
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.ltx-workflow-detail strong {
+  color: #d4d8df;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ltx-workflow-detail span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.ltx-workflow-actions {
+  flex-wrap: wrap;
+}
+
+.ltx-inventory-output {
+  min-height: 290px;
+  max-height: 520px;
+}
+
+@media (max-width: 1100px) {
+  .ltx-grid,
+  .ltx-workflow-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ltx-control-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .ltx-top-controls,
+  .ltx-keyframes,
+  .ltx-control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ltx-video-stage {
+    min-height: 300px;
+  }
+}
