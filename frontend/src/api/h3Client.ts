@@ -1,9 +1,12 @@
-import { Client } from "@gradio/client";
+import { Client, handle_file } from "@gradio/client";
 
 import type {
   BatchSnapshot,
   GallerySnapshot,
   GenerateUpdate,
+  Ltx25Request,
+  LtxInventory,
+  LtxPreparation,
   Music3Request,
   StudioCatalog,
   SystemStatus,
@@ -183,6 +186,68 @@ export async function cancelMusic3(): Promise<string> {
     await client.predict("/studio_music_cancel", []),
   );
   return payload.message || "Cancellation requested.";
+}
+
+export async function generateLtx25(
+  request: Ltx25Request,
+  onUpdate: (update: GenerateUpdate) => void,
+  signal?: AbortSignal,
+): Promise<GenerateUpdate> {
+  const client = await getClient();
+  const first = request.firstImage ? handle_file(request.firstImage) : null;
+  const middle = request.middleImage ? handle_file(request.middleImage) : null;
+  const end = request.endImage ? handle_file(request.endImage) : null;
+  return consumeMediaSubmission(
+    client.submit("/generate_ltx25_video", [
+      request.mode,
+      request.model,
+      request.prompt,
+      request.negativePrompt,
+      first,
+      request.duration,
+      request.fps,
+      request.width,
+      request.height,
+      request.seed,
+      request.cfg,
+      request.sampler,
+      request.imageStrength,
+      middle,
+      request.middleTime,
+      request.middleStrength,
+      end,
+      request.endStrength,
+    ]),
+    onUpdate,
+    signal,
+  );
+}
+
+export async function cancelLtx25(): Promise<string> {
+  const client = await getClient();
+  const payload = parseJsonResult<{ message?: string }>(
+    await client.predict("/studio_ltx_cancel", []),
+  );
+  return payload.message || "Cancellation requested.";
+}
+
+export async function ltxInventory(): Promise<LtxInventory> {
+  const client = await getClient();
+  return parseJsonResult<LtxInventory>(await client.predict("/studio_ltx_inventory", []));
+}
+
+export async function prepareLtxWorkflow(workflowName: string): Promise<LtxPreparation> {
+  const client = await getClient();
+  return parseJsonResult<LtxPreparation>(
+    await client.predict("/studio_ltx_prepare_workflow", [workflowName]),
+  );
+}
+
+export async function prepareAllLtxModels(): Promise<LtxPreparation> {
+  const client = await getClient();
+  return parseJsonResult<LtxPreparation>(
+    await client.predict("/studio_ltx_prepare_all", []),
+  );
 }
 
 export async function enqueueBatch(promptsText: string): Promise<BatchSnapshot> {
