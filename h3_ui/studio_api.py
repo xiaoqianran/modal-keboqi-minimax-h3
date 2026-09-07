@@ -9,6 +9,7 @@ The React frontend talks only to these stable endpoints (plus the existing
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import gradio as gr
 
@@ -40,6 +41,49 @@ def _batch_payload(owner: str, selected_batch_id: str | None = None) -> dict[str
             }
             for row in item_rows
         ],
+    }
+
+
+def _relative_app_url(url: str) -> str:
+    """Return a same-app URL so the Vite dev proxy can keep one origin."""
+    parsed = urlsplit(str(url or ""))
+    if not parsed.scheme and not parsed.netloc:
+        return str(url or "")
+    return urlunsplit(("", "", parsed.path or "/", parsed.query, parsed.fragment))
+
+
+def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any]:
+    # Lazy import avoids layout -> studio_api -> gradio_app during UI construction.
+    import gradio_app as legacy
+
+    items: list[dict[str, Any]] = []
+    for video in legacy.gallery_video_paths():
+        try:
+            stat = video.stat()
+        except OSError:
+            continue
+        snapshot = legacy.read_snapshot(video)
+        items.append(
+            {
+                # The path is an opaque server identifier in Studio. Destructive
+                # operations still flow through the existing legacy validators.
+                "path": str(video),
+                "name": video.name,
+                "preview_url": _relative_app_url(
+                    legacy.absolute_video_url(video, request, download=False)
+                ),
+                "download_url": _relative_app_url(
+                    legacy.absolute_video_url(video, request, download=True)
+                ),
+                "size_bytes": int(stat.st_size),
+                "modified_at": float(stat.st_mtime),
+                "snapshot": snapshot,
+            }
+        )
+    return {
+        "message": message,
+        "count": len(items),
+        "items": items,
     }
 
 
@@ -75,6 +119,26 @@ def studio_generate_cancel(request: gr.Request) -> dict[str, str]:
     return {"message": str(legacy.interrupt(request, "api"))}
 
 
+def studio_gallery_list(request: gr.Request) -> dict[str, Any]:
+    return _gallery_payload(request)
+
+
+def studio_gallery_delete(selected_video: str, request: gr.Request) -> dict[str, Any]:
+    import gradio_app as legacy
+
+    result = legacy.delete_selected_gallery_video(selected_video, True)
+    message = str(result[2]) if len(result) > 2 else "Output deleted."
+    return _gallery_payload(request, message=message)
+
+
+def studio_gallery_empty(request: gr.Request) -> dict[str, Any]:
+    import gradio_app as legacy
+
+    result = legacy.empty_generated_gallery(None, True)
+    message = str(result[2]) if len(result) > 2 else "Gallery emptied."
+    return _gallery_payload(request, message=message)
+
+
 def studio_system_status() -> dict[str, Any]:
     # Lazy import avoids the layout -> studio_api -> gradio_app import cycle.
     import gradio_app as legacy
@@ -92,6 +156,7 @@ def build_studio_api() -> None:
     with gr.Group(visible=False):
         prompts = gr.Textbox()
         batch_id = gr.Textbox()
+        gallery_video = gr.Textbox()
         payload = gr.JSON()
 
         gr.Button(visible=False).click(
@@ -124,6 +189,28 @@ def build_studio_api() -> None:
             queue=False,
             show_progress="hidden",
             api_name="studio_generate_cancel",
+        )
+        gr.Button(visible=False).click(
+            studio_gallery_list,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_gallery_list",
+        )
+        gr.Button(visible=False).click(
+            studio_gallery_delete,
+            inputs=gallery_video,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_gallery_delete",
+        )
+        gr.Button(visible=False).click(
+            studio_gallery_empty,
+            outputs=payload,
+            queue=False,
+            show_progress="hidden",
+            api_name="studio_gallery_empty",
         )
         gr.Button(visible=False).click(
             studio_system_status,
