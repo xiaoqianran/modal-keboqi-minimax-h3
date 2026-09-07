@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import gradio as gr
 
+from .batch_view import build_batch_view
+
 
 @dataclass(frozen=True)
 class AppViews:
@@ -28,14 +30,16 @@ def create_app_views() -> AppViews:
 
     tabs = gr.Tabs(elem_id="h3-main-tabs")
     with tabs:
-        with gr.Tab("MiniMax H3"):
+        with gr.Tab("Create"):
             generation = gr.Row(elem_classes=["h3-generator-shell"])
+        with gr.Tab("Batch Studio"):
+            build_batch_view()
+        with gr.Tab("Gallery") as gallery_tab:
+            gallery = gr.Group(elem_classes=["h3-gallery-shell"])
         with gr.Tab("LTX 2.5"):
             ltx25 = gr.Group()
         with gr.Tab("MiniMax Music 3"):
             music3 = gr.Group()
-        with gr.Tab("Gallery") as gallery_tab:
-            gallery = gr.Group(elem_classes=["h3-gallery-shell"])
         with gr.Tab("API"):
             api = gr.Group()
     return AppViews(tabs, generation, ltx25, music3, gallery, api, gallery_tab)
