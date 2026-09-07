@@ -8,6 +8,7 @@ import "./h3.css";
 import "./gallery.css";
 import "./music.css";
 import "./ltx.css";
+import "./tools.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
