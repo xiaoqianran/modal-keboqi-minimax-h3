@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import App from "./App";
 import "./styles.css";
+import "./h3.css";
 import "./gallery.css";
 import "./music.css";
 import "./ltx.css";
