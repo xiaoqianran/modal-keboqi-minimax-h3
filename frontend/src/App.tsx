@@ -4,8 +4,8 @@ import type { StudioSection } from "./api/types";
 import { BatchView } from "./features/BatchView";
 import { CreateView } from "./features/CreateView";
 import { GalleryView } from "./features/GalleryView";
+import { LtxView } from "./features/LtxView";
 import { MusicView } from "./features/MusicView";
-import { PlaceholderView } from "./features/PlaceholderView";
 import { SystemView } from "./features/SystemView";
 
 const NAV: Array<{ id: StudioSection; label: string; hint: string }> = [
@@ -25,19 +25,12 @@ function page(section: StudioSection) {
       return <BatchView />;
     case "gallery":
       return <GalleryView />;
+    case "ltx":
+      return <LtxView />;
     case "music":
       return <MusicView />;
     case "system":
       return <SystemView />;
-    case "ltx":
-      return (
-        <PlaceholderView
-          eyebrow="Lightricks"
-          title="LTX 2.5"
-          description="LTX remains a first-class workspace. The new page will expose the current official workflows and model preparation controls through typed adapters."
-          items={["Text / image to video", "Two-stage upscale", "Audio-to-video", "IC-LoRA workflows"]}
-        />
-      );
   }
 }
 
