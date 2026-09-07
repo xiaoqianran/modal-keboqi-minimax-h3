@@ -6,6 +6,8 @@ import type {
   GenerateUpdate,
   H3AdvancedRequest,
   H3GenerateUpdate,
+  H3PromptEnhanceRequest,
+  H3PromptEnhanceResult,
   Ltx25Request,
   LtxInventory,
   LtxPreparation,
@@ -57,9 +59,7 @@ function normalizeOutputUrl(value: unknown): string {
   if (typeof value === "string") {
     const raw = value.trim();
     if (!raw) return "";
-    // Gradio generators may expose an internal server filepath as a string.
-    // Only browser-addressable strings are safe to render directly.
-    if (/^https?:\/\//i.test(raw) || raw.startsWith("/")) {
+    if (/^https?:\/\//i.test(raw) || raw.startsWith("/downloads/") || raw.startsWith("/gradio_api/")) {
       return backendUrl(raw);
     }
     return "";
@@ -110,8 +110,8 @@ function normalizeGallery(snapshot: GallerySnapshot): GallerySnapshot {
     ...snapshot,
     items: snapshot.items.map((item) => ({
       ...item,
-      preview_url: backendUrl(item.preview_url),
-      download_url: backendUrl(item.download_url),
+      preview_url: item.preview_url ? backendUrl(item.preview_url) : "",
+      download_url: item.download_url ? backendUrl(item.download_url) : "",
     })),
   };
 }
@@ -284,10 +284,7 @@ export async function generateH3Advanced(
 
   const submission = client.submit("/generate_video_advanced", payload);
   let latest: H3GenerateUpdate = {
-    videos: [],
-    images: [],
-    audioUrl: "",
-    status: "Submitting",
+    videos: [], images: [], audioUrl: "", status: "Submitting",
   };
   const abort = () => submission.cancel();
   signal?.addEventListener("abort", abort, { once: true });
@@ -319,6 +316,59 @@ export async function generateH3Advanced(
   }
 
   return latest;
+}
+
+export async function enhanceH3Prompt(request: H3PromptEnhanceRequest): Promise<H3PromptEnhanceResult> {
+  const client = await getClient();
+  const generation = request.generation;
+  const images = generation.referenceImages;
+  const videos = generation.referenceVideos;
+  const audios = generation.referenceAudios;
+  const voices = generation.fl2vaAudios;
+  const result = await client.predict("/enhance_prompt", {
+    prompt: generation.prompt,
+    backend: request.backend,
+    local_base_model: request.localBaseModel,
+    local_max_new_tokens: request.localMaxNewTokens,
+    local_temperature: request.localTemperature,
+    local_top_p: request.localTopP,
+    local_greedy: request.localGreedy,
+    local_seed: request.localSeed,
+    gemini_model: request.geminiModel,
+    gemini_api_key: request.geminiApiKey,
+    lightning_api_key: request.lightningApiKey,
+    mode: generation.mode,
+    first_image: fileInput(generation.firstImage),
+    last_image: fileInput(generation.lastImage),
+    ref_image_1: fileInput(at(images, 0)),
+    ref_image_2: fileInput(at(images, 1)),
+    ref_image_3: fileInput(at(images, 2)),
+    ref_image_4: fileInput(at(images, 3)),
+    ref_image_5: fileInput(at(images, 4)),
+    ref_image_6: fileInput(at(images, 5)),
+    ref_image_7: fileInput(at(images, 6)),
+    ref_image_8: fileInput(at(images, 7)),
+    ref_image_9: fileInput(at(images, 8)),
+    ref_video_1: fileInput(at(videos, 0)),
+    ref_video_2: fileInput(at(videos, 1)),
+    ref_video_3: fileInput(at(videos, 2)),
+    ref_audio_1: fileInput(at(audios, 0)),
+    ref_audio_2: fileInput(at(audios, 1)),
+    ref_audio_3: fileInput(at(audios, 2)),
+    duration: generation.duration,
+    width: generation.width,
+    height: generation.height,
+    result_format: generation.resultFormat,
+    image_frames: generation.imageFrames,
+    fl2va_audio_1: fileInput(at(voices, 0)),
+    fl2va_audio_2: fileInput(at(voices, 1)),
+    fl2va_audio_3: fileInput(at(voices, 2)),
+  });
+  const data = (result as { data?: unknown[] }).data ?? [];
+  return {
+    prompt: asString(data[0]),
+    status: asString(data[1]),
+  };
 }
 
 export async function cancelDefaultVideo(): Promise<string> {
@@ -375,16 +425,13 @@ export async function generateLtx25(
   signal?: AbortSignal,
 ): Promise<GenerateUpdate> {
   const client = await getClient();
-  const first = request.firstImage ? handle_file(request.firstImage) : null;
-  const middle = request.middleImage ? handle_file(request.middleImage) : null;
-  const end = request.endImage ? handle_file(request.endImage) : null;
   return consumeMediaSubmission(
     client.submit("/generate_ltx25_video", [
       request.mode,
       request.model,
       request.prompt,
       request.negativePrompt,
-      first,
+      fileInput(request.firstImage),
       request.duration,
       request.fps,
       request.width,
@@ -393,10 +440,10 @@ export async function generateLtx25(
       request.cfg,
       request.sampler,
       request.imageStrength,
-      middle,
+      fileInput(request.middleImage),
       request.middleTime,
       request.middleStrength,
-      end,
+      fileInput(request.endImage),
       request.endStrength,
     ]),
     onUpdate,
