@@ -112,6 +112,16 @@ export interface H3Choices {
   ltx25_models: string[];
 }
 
+export interface H3PromptWriterCatalog {
+  backends: string[];
+  default_backend: string;
+  local_models: string[];
+  default_local_model: string;
+  gemini_models: string[];
+  default_gemini_model: string;
+  lightning_model: string;
+}
+
 export interface H3Catalog {
   defaults: H3Defaults;
   choices: H3Choices;
@@ -120,6 +130,7 @@ export interface H3Catalog {
     fast: Record<string, [number, number]>;
     large: Record<string, [number, number]>;
   };
+  prompt_writer: H3PromptWriterCatalog;
 }
 
 export interface H3AdvancedRequest {
@@ -190,6 +201,25 @@ export interface H3AdvancedRequest {
   semanticBridge: boolean;
   semanticBridgeAlpha: number;
   fl2vaAudios: Array<File | null>;
+}
+
+export interface H3PromptEnhanceRequest {
+  generation: H3AdvancedRequest;
+  backend: string;
+  localBaseModel: string;
+  localMaxNewTokens: number;
+  localTemperature: number;
+  localTopP: number;
+  localGreedy: boolean;
+  localSeed: number;
+  geminiModel: string;
+  geminiApiKey: string;
+  lightningApiKey: string;
+}
+
+export interface H3PromptEnhanceResult {
+  prompt: string;
+  status: string;
 }
 
 export interface BatchSummary {
