@@ -37,6 +37,8 @@ class ServerConfig:
     workflows: dict
     workflow_dir: Path
     video_extensions: frozenset[str]
+    image_extensions: frozenset[str]
+    audio_extensions: frozenset[str]
     css: str
 
 
@@ -234,10 +236,15 @@ def build_server(
         candidate = (root / file_path).resolve()
         if (
             not candidate.is_relative_to(root)
-            or candidate.suffix.lower() not in config.video_extensions
+            or candidate.suffix.lower()
+            not in (
+                config.video_extensions
+                | config.image_extensions
+                | config.audio_extensions
+            )
             or not candidate.is_file()
         ):
-            raise HTTPException(status_code=404, detail="Video not found")
+            raise HTTPException(status_code=404, detail="Media not found")
         return FileResponse(
             candidate,
             filename=candidate.name if download else None,

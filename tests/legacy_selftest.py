@@ -3,7 +3,13 @@ from __future__ import annotations
 import gradio_app as app
 
 def selftest() -> None:
-    assert app.MODEL_PROFILE_CHOICES == ["Speed", "Quality", "Original"]
+    assert app.MODEL_PROFILE_CHOICES == [
+        "Speed",
+        "Quality",
+        "Original",
+        "Singularity",
+        "FastH3 8-Step V2",
+    ]
     assert app.GEMINI_PROMPT_MODELS == (
         "gemini-3.8-flash",
         "gemini-3.7-flash",
@@ -11,6 +17,7 @@ def selftest() -> None:
         "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
     )
+    assert app.DEFAULT_GEMINI_PROMPT_MODEL == "gemini-3.5-flash-lite"
     assert app.LIGHTNING_API_ROOT == "https://lightning.ai/api/v1/"
     assert app.LIGHTNING_PROMPT_MODEL == "openai/gpt-5.6-luna"
     assert app.PROMPT_WRITER_BACKENDS == (
@@ -127,14 +134,16 @@ def selftest() -> None:
     tab_nodes = tabs_layout["children"]
     assert [components_by_id[node["id"]]["props"]["label"] for node in tab_nodes] == [
         "MiniMax H3",
+        "Qwen Image 2.1",
         "LTX 2.5",
         "MiniMax Music 3",
+        "YuE2",
         "Gallery",
         "API",
     ]
     assert [
         components_by_id[node["children"][0]["id"]]["type"] for node in tab_nodes
-    ] == ["row", "group", "group", "group", "group"]
+    ] == ["row", "group", "group", "group", "group", "group", "group"]
     with app.tempfile.TemporaryDirectory() as output_temp:
         output_root = app.Path(output_temp)
         staging_root = output_root / "h3" / "image_staging"
@@ -471,7 +480,7 @@ def selftest() -> None:
         == fake.turbo_8step_ref_lora
     )
     with app.unittest.mock.patch(
-        f"{app.__name__}.stale_model_keys", return_value=[]
+        "h3_app.model_service.stale_model_keys", return_value=[]
     ) as stale_turbo_models:
         assert (
             app.ensure_turbo_lora(
@@ -524,6 +533,7 @@ def selftest() -> None:
         models=fake,
         available_nodes=available,
         text_encoder_name="qwen3vl_32b_minimax_h3_bf16.safetensors",
+        encoder_small_input=True,
         stage_model_offload=True,
         smart_stage_offload=True,
     )
@@ -559,6 +569,7 @@ def selftest() -> None:
         "test",
         "qwen3vl_32b_minimax_h3_bf16.safetensors",
         [],
+        encoder_settings={"encoder_small_input": True},
     )
     assert cache_node["inputs"]["cache_key"] == expected_cache_key
     policy_id, policy = next(
@@ -572,6 +583,7 @@ def selftest() -> None:
         "changed",
         "qwen3vl_32b_minimax_h3_bf16.safetensors",
         [],
+        encoder_settings={"encoder_small_input": True},
     )
     final_offload = next(
         node for node in graph.values() if node["class_type"] == app.H3_STAGE_OFFLOAD_NODE
@@ -612,6 +624,7 @@ def selftest() -> None:
         model_name=fake.profile("speed").fl2va,
         models=fake,
         available_nodes=available,
+        encoder_small_input=True,
         result_format="Image",
         image_frames=20,
     )
@@ -682,6 +695,7 @@ def selftest() -> None:
         model_name=fake.profile("speed").fl2va,
         models=fake,
         available_nodes=available,
+        encoder_small_input=True,
         result_format="Image",
         image_frames=1,
         image_vae=app.SINGLE_FRAME_IMAGE_VAE,
@@ -883,6 +897,7 @@ def selftest() -> None:
         model_name=fake.profile("speed").fl2va,
         models=fake,
         available_nodes=available,
+        encoder_small_input=True,
         latent_upscale_model_name="minimax_h3_latent_upscaler_3d_bf16.safetensors",
         latent_upscale_precision="bf16",
         latent_upscale_refine_steps=2,
@@ -1210,6 +1225,10 @@ def selftest() -> None:
         "min_seq_len": 8192,
         "dense_last_steps": 1,
         "protect_audio": True,
+        "engine": "triton",
+        "use_int8_qk": False,
+        "tail_correction": False,
+        "dense_steps": "0",
         "enabled": True,
     }
     assert not any(
@@ -1603,6 +1622,9 @@ def selftest() -> None:
     assert app.POSTPROCESS_OPTIONS == [
         app.SEEDVR2_UPSCALE,
         app.LTX25_UPSCALE,
+        app.LTX25_DECOMPRESSION,
+        app.LTX25_DEBLUR,
+        app.LTX25_CQ_ENHANCER,
         app.SWIFTVR_UPSCALE,
         "48 fps interpolation",
     ]
@@ -1613,8 +1635,8 @@ def selftest() -> None:
         app.SWIFTVR_UPSCALE,
     ]
 
-    assert app.resolution_choice_values("9:16 · 768×1344", "large")[:2] == (768, 1344)
-    assert app.resolution_choice_values("1:1 · 1024×1024", "large")[:2] == (1024, 1024)
+    assert app.resolution_choice_values("9:16 · 1440×2560", "large")[:2] == (1440, 2560)
+    assert app.resolution_choice_values("1:1 · 1440×1440", "large")[:2] == (1440, 1440)
     assert set(app.RESOLUTION_TIERS) == {"draft", "fast", "large"}
     assert app.preset_values("Quality")[0] == 20
     assert app.preset_values("Balanced")[0] == 18
@@ -1652,7 +1674,7 @@ def selftest() -> None:
     assert app.preset_values("Quality", "Turbo")[0] == 8
     assert app.preset_values("unknown") == app.preset_values("Balanced")
     assert app.UI_DEFAULTS["steps"] == app.turbo_steps_for(app.UI_DEFAULTS["turbo_variant"])
-    assert app.UI_DEFAULTS["width"] == 864 and app.UI_DEFAULTS["height"] == 480
+    assert app.UI_DEFAULTS["width"] == 1376 and app.UI_DEFAULTS["height"] == 768
     assert app.UI_DEFAULTS["reuse_unchanged_inputs"] is True
     assert 'api_name="/generate_video"' in app.api_guide()
 
@@ -1699,7 +1721,7 @@ def selftest() -> None:
                 return app.unittest.mock.Mock(returncode=0, stderr="")
 
             with (
-                app.unittest.mock.patch("subprocess.run", side_effect=fake_ffmpeg) as run,
+                app.unittest.mock.patch.object(app.staging, "run_media_process", side_effect=fake_ffmpeg) as run,
                 app.unittest.mock.patch("builtins.print"),
             ):
                 video_first = app.stage_file(
@@ -1721,7 +1743,7 @@ def selftest() -> None:
             failed_video = staging_root / "failed.mov"
             failed_video.write_bytes(b"failed video bytes")
             with app.unittest.mock.patch(
-                "subprocess.run", side_effect=OSError("ffmpeg unavailable")
+                "h3_app.staging.run_media_process", side_effect=OSError("ffmpeg unavailable")
             ):
                 try:
                     app.stage_file(
@@ -1785,7 +1807,7 @@ def selftest() -> None:
     api_kwargs = captured_api_call["kwargs"]
     assert api_kwargs["prompt"] == "API prompt"
     assert api_kwargs["mode"] == "Text to video"
-    assert api_kwargs["model_profile"] == "Speed"
+    assert api_kwargs["model_profile"] == "Singularity"
     assert api_kwargs["turbo_variant"] == app.DEFAULT_TURBO
     for key, expected in app.UI_DEFAULTS.items():
         assert api_kwargs[key] == expected
@@ -1799,7 +1821,7 @@ def selftest() -> None:
     original_outputs_dir = vars(app)["OUTPUTS_DIR"]
     original_thumbnails_dir = vars(app)["GALLERY_THUMBNAILS_DIR"]
     original_gallery_thumbnail = vars(app)["gallery_thumbnail"]
-    original_gallery_video_resolution = vars(app)["gallery_video_resolution"]
+    original_gallery_video_resolution = vars(app.gallery_store)["gallery_video_resolution"]
     with app.tempfile.TemporaryDirectory() as gallery_temp:
         gallery_root = app.Path(gallery_temp)
         comfy_test_output = gallery_root / "comfy"
@@ -1812,7 +1834,7 @@ def selftest() -> None:
         vars(app)["OUTPUTS_DIR"] = gradio_test_output
         vars(app)["GALLERY_THUMBNAILS_DIR"] = gradio_test_output / ".thumbs"
         vars(app)["gallery_thumbnail"] = lambda _video: None
-        vars(app)["gallery_video_resolution"] = lambda _video: (864, 480)
+        vars(app.gallery_store)["gallery_video_resolution"] = lambda _video, **_kwargs: (864, 480)
         try:
             h3_video = comfy_test_output / "h3" / "minimax.mp4"
             ltx25_video = comfy_test_output / "ltx25" / "ltx.mp4"
@@ -1869,7 +1891,7 @@ def selftest() -> None:
             vars(app)["OUTPUTS_DIR"] = original_outputs_dir
             vars(app)["GALLERY_THUMBNAILS_DIR"] = original_thumbnails_dir
             vars(app)["gallery_thumbnail"] = original_gallery_thumbnail
-            vars(app)["gallery_video_resolution"] = original_gallery_video_resolution
+            vars(app.gallery_store)["gallery_video_resolution"] = original_gallery_video_resolution
         assert len(gallery_items) == 1
         assert "864×480" in gallery_items[0][1]
         assert gallery_paths == [str(fallback_video)]
@@ -1957,7 +1979,7 @@ def selftest() -> None:
     assert two_mp_landscape[0] * two_mp_landscape[1] < 2_000_000
     assert app.auto_resolution_pixel_cap("4 MP") == 4_000_000 - 1
     assert app.auto_resolution_pixel_cap("8 MP") == 8_000_000 - 1
-    assert app.UI_DEFAULTS["model_profile"] == "Speed"
+    assert app.UI_DEFAULTS["model_profile"] == "Singularity"
     assert app.UI_DEFAULTS["text_encoder"] == "NVFP4 / AWQ"
     assert app.UI_DEFAULTS["stage_model_offload"] is False
     fast_defaults = app.preset_values("Fast")
@@ -2154,6 +2176,7 @@ def selftest() -> None:
         model_name=fake.profile("quality").fl2va,
         models=fake,
         available_nodes=available,
+        encoder_small_input=True,
         use_int8_vae=True,
     )
     quality_unets = [
@@ -2370,7 +2393,7 @@ def selftest() -> None:
         )
         return route_graph
 
-    for profile_name in ("speed", "quality", "original"):
+    for profile_name in ("speed", "quality", "original", "singularity"):
         larry_route = turbo_route_graph(profile_name, app.LARRY_TURBO)
         larry_route_loader = next(
             node
@@ -2465,7 +2488,7 @@ def selftest() -> None:
         f"Sol Auto/Turbo policy valid, Spectrum default + Sol/ConvRot order valid, "
         f"zero-copy Sol + FirstBlockCache composition valid, "
         f"LightX fused modulation + Larry compatibility + ConvRot FFN chunking valid, "
-        f"Spectrum v0.2.23 legacy Turbo composition + block-cache guard valid, "
+        f"Spectrum v0.2.28 legacy Turbo composition + block-cache guard valid, "
         f"MMH3 Split Upscale controls + three-node graph contract valid, "
         f"selectable Larry/LightX2V Turbo on "
         f"FL2VA/Ref2VA + synchronized editable Turbo steps valid, "

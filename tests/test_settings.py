@@ -13,6 +13,57 @@ from h3_app.contracts import GENERATION_FIELDS, GenerationArguments
 
 
 class SettingsTests(unittest.TestCase):
+    def test_singularity_default_matches_fast_and_selects_base(self):
+        self.assertEqual(GenerationRequest().preset, "Singularity")
+        self.assertEqual(GenerationRequest().model_profile, "Singularity")
+        self.assertTrue(GenerationRequest().semantic_bridge)
+        for mode in ("Normal", "Turbo"):
+            self.assertEqual(preset_settings("Singularity", mode), preset_settings("Fast", mode))
+            for action in ("preset", "restore"):
+                _, values = transition_modes(None, {"preset": "Singularity", "generation_mode": mode, "model_profile": "Speed", "prompt": "keep", "width": 864}, action)
+                self.assertEqual(values["model_profile"], "Singularity")
+                self.assertEqual(values["steps"], preset_settings("Fast", mode).steps)
+                self.assertEqual(values["prompt"], "keep")
+                self.assertEqual(values["width"], 864)
+
+
+    def test_video_vae_preset_defaults_and_decoder_switches(self):
+        for mode in ("Normal", "Turbo"):
+            for preset in ("Singularity", "Fast", "Balanced", "Quality"):
+                values = {
+                    **asdict(preset_settings(preset, mode)),
+                    "preset": preset,
+                    "generation_mode": mode,
+                    "use_int8_vae": False,
+                    "use_trt_vae": True,
+                }
+                _, applied = transition_modes(None, values, "preset")
+                self.assertEqual(applied["use_int8_vae"], preset in {"Singularity", "Fast"})
+                self.assertFalse(applied["use_trt_vae"])
+
+        values = {
+            **asdict(preset_settings("Fast", "Turbo")),
+            "preset": "Fast",
+            "generation_mode": "Turbo",
+            "use_int8_vae": True,
+            "use_trt_vae": False,
+        }
+        memory, values = transition_modes(None, values, "edit")
+        values["use_trt_vae"] = True
+        memory, values = transition_modes(memory, values, "use_trt_vae")
+        self.assertTrue(values["use_trt_vae"])
+        self.assertFalse(values["use_int8_vae"])
+        values["use_int8_vae"] = True
+        memory, values = transition_modes(memory, values, "use_int8_vae")
+        self.assertTrue(values["use_int8_vae"])
+        self.assertFalse(values["use_trt_vae"])
+        values["use_int8_vae"] = False
+        memory, values = transition_modes(memory, values, "use_int8_vae")
+        self.assertFalse(values["use_int8_vae"])
+        memory, values = transition_modes(memory, values, "restore")
+        self.assertTrue(values["use_int8_vae"])
+        self.assertFalse(values["use_trt_vae"])
+
     def test_presets_preserve_trained_counts(self):
         self.assertEqual(
             [
@@ -28,6 +79,40 @@ class SettingsTests(unittest.TestCase):
             ],
             [15, 18, 20],
         )
+        self.assertEqual(preset_settings("Quality", "Normal").text_encoder, "INT8 ConvRot")
+        self.assertFalse(preset_settings("Quality", "Normal").stage_model_offload)
+
+    def test_fasth3_8step_profile_enforces_its_native_text_schedule(self):
+        request = GenerationRequest(
+            model_profile=FASTH3_8STEP_PROFILE,
+            mode="First / last frame",
+            generation_mode="Turbo",
+            sampling=replace(
+                SamplingSettings(), steps=4, scheduler="beta", attention_mode="SLA"
+            ),
+        )
+        plan = resolve_settings(request)
+        self.assertIn("FastH3 8-Step V2 supports Text to video only.", plan.issues)
+        self.assertEqual(plan.effective.generation_mode, "Normal")
+        self.assertEqual(plan.effective.sampling.steps, 8)
+        self.assertEqual(plan.effective.sampling.scheduler, "simple")
+        self.assertEqual(plan.effective.sampling.attention_mode, "Kitchen")
+
+        _, values = transition_modes(
+            None,
+            {
+                **asdict(SamplingSettings()),
+                "model_profile": FASTH3_8STEP_PROFILE,
+                "mode": "Reference media",
+                "generation_mode": "Turbo",
+            },
+            "model_profile",
+        )
+        self.assertEqual(values["mode"], TEXT_TO_VIDEO_MODE)
+        self.assertEqual(values["generation_mode"], "Normal")
+        self.assertEqual(values["steps"], 8)
+        self.assertEqual(values["scheduler"], "simple")
+        self.assertEqual(values["attention_mode"], "Kitchen")
 
     def test_manual_and_required_changes_are_distinct(self):
         r = GenerationRequest(
@@ -177,7 +262,7 @@ class JobTests(unittest.TestCase):
             token = CURRENT_JOB.set(Job("a", "h3", output_token="ours"))
             try:
                 self.assertEqual(
-                    recent_output_candidates(root, frozenset({".mp4"}), 0),
+                    recent_output_candidates(root, frozenset({".mp4"}), 0, output_token="ours"),
                     [ours.resolve()],
                 )
             finally:

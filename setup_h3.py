@@ -12,21 +12,51 @@ import sys
 import tempfile
 from pathlib import Path
 
+from h3_sources import (
+    COMFY_REPO,
+    CONTROLNET_AUX_REF,
+    CONTROLNET_AUX_REPO,
+    H3_LATENT_UPSCALER_NODE_REF,
+    H3_LATENT_UPSCALER_NODE_REPO,
+    KJNODES_REF,
+    KJNODES_REPO,
+    LARRY_TURBO_REF,
+    LARRY_TURBO_REPO,
+    LTXVIDEO_REF,
+    LTXVIDEO_REPO,
+    SAGE_WHEEL_NAME,
+    SAGE_WHEEL_URL,
+    SLA_REF,
+    SLA_REPO,
+    SOL_REF,
+    SOL_REPO,
+    SPECTRUM_REF,
+    SPECTRUM_REPO,
+    SPECTRUM_QWEN_REF,
+    SPECTRUM_QWEN_REPO,
+    VIDEO_DEPTH_REF,
+    VIDEO_DEPTH_REPO,
+)
 from h3_models import PRELOAD_MODEL_KEYS, sync_models, write_json_atomic
 from h3_node_patches import (
     TRT_VAE_NODE_REF,
     TRT_VAE_NODE_REPO,
     patch_larry_turbo_node,
+    patch_qwen_spectrum_node,
     patch_trt_vae_node,
 )
 from h3_requirements import (
     H3_AUDIO_T8_REPO,
     H3_AUDIO_T8_REF,
-    ABI_CONSTRAINTS,
     COMFY_FRONTEND_VERSION,
     COMFY_REF,
+    GRADIO_VERSION,
+    HUGGINGFACE_HUB_REQUIREMENT,
+    INSTALL_CONSTRAINTS,
     KERNELS_VERSION,
     KORNIA_VERSION,
+    KORNIA_RS_VERSION,
+    LTX_HDR_REQUIREMENTS,
     NUMPY_VERSION,
     SCIPY_VERSION,
     TORCH_INDEX,
@@ -43,31 +73,6 @@ from h3_requirements import (
 )
 
 
-COMFY_REPO = "https://github.com/Comfy-Org/ComfyUI.git"
-SOL_REPO = "https://github.com/Saganaki22/ComfyUI-sol-attn.git"
-SOL_REF = "930a4d6e432ff8b8ed5e30ff2f72519b92d69bdf"  # v0.6.2, SM86 support
-SLA_REPO = "https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes.git"
-SLA_REF = "aaec055cd642b3292df18e69824c012d345ebfe8"  # v1.4.4
-SPECTRUM_REPO = "https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3.git"
-SPECTRUM_REF = "beb32dd210ef9e95520453107f158241d4f2ecf3"
-LARRY_TURBO_REPO = "https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo.git"
-LARRY_TURBO_REF = (
-    "4274783a23afcfdbea3b4876cb79effd6c510785"  # v1.2.3+ audio/reference fixes
-)
-H3_LATENT_UPSCALER_NODE_REPO = (
-    "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git"
-)
-H3_LATENT_UPSCALER_NODE_REF = "d7c01b9011f2e8439493f6c02c29995a27df276f"
-LTXVIDEO_REPO = "https://github.com/Lightricks/ComfyUI-LTXVideo.git"
-LTXVIDEO_REF = "15d09abb5a187a8dcaea2fc31fe51ee96e6c9d0d"
-KJNODES_REPO = "https://github.com/kijai/ComfyUI-KJNodes.git"
-KJNODES_REF = "e8e88f7c88e3f6205b122f5de87e69a09fbce5ac"
-CONTROLNET_AUX_REPO = "https://github.com/Fannovel16/comfyui_controlnet_aux.git"
-CONTROLNET_AUX_REF = "59b1fc411ede8623b2997855b8018f0b3b6cf49f"
-VIDEO_DEPTH_REPO = "https://github.com/yuvraj108c/ComfyUI-Video-Depth-Anything.git"
-VIDEO_DEPTH_REF = "a0db08e63d1ea571601c45cde4aaee0acdd0544d"
-SAGE_WHEEL_URL = "https://huggingface.co/JahJedi/sageattention-flashattn-blackwell-cu130-torch211-cp312/resolve/main/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl"
-SAGE_WHEEL_NAME = "sageattention-2.2.0-cp312-cp312-linux_x86_64.whl"
 SCRIPT_DIR = Path(__file__).resolve().parent
 BUNDLED_ACCEL_NODE = SCRIPT_DIR / "custom_nodes" / "H3Acceleration" / "__init__.py"
 
@@ -450,7 +455,7 @@ def install_controlnet_aux_requirements(requirements: Path) -> None:
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", suffix=".txt", delete=False
         ) as handle:
-            handle.write("\n".join(ABI_CONSTRAINTS) + "\n")
+            handle.write("\n".join(INSTALL_CONSTRAINTS) + "\n")
             constraint_path = Path(handle.name)
         uv_pip(
             "-r",
@@ -509,7 +514,7 @@ def install_comfy_requirements(comfy: Path) -> None:
         suffix=".txt",
         delete=False,
     ) as handle:
-        handle.write("\n".join(ABI_CONSTRAINTS) + "\n")
+        handle.write("\n".join(INSTALL_CONSTRAINTS) + "\n")
         constraint_path = Path(handle.name)
 
     try:
@@ -637,11 +642,11 @@ def install_environment(comfy: Path) -> None:
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", suffix=".txt", delete=False
         ) as handle:
-            handle.write("\n".join(ABI_CONSTRAINTS) + "\n")
+            handle.write("\n".join(INSTALL_CONSTRAINTS) + "\n")
             app_constraint_path = Path(handle.name)
         uv_pip(
-            "gradio>=5,<7",
-            "huggingface_hub>=0.34",
+            f"gradio=={GRADIO_VERSION}",
+            HUGGINGFACE_HUB_REQUIREMENT,
             "transformers>=4.57.1",
             "diffusers>=0.36,<0.37",
             f"kernels=={KERNELS_VERSION}",
@@ -649,11 +654,12 @@ def install_environment(comfy: Path) -> None:
             "peft>=0.18",
             "safetensors>=0.7",
             "einops>=0.8.2",
+            "onnx>=1.19,<2",  # TensorRT compiler graph-based quantization detection
             "decord==0.6.0",
             "imageio>=2.37.2",
             "imageio-ffmpeg>=0.6",
             "requests>=2.32",
-            "openai>=1.109,<3",
+            "openai>=3.16.2,<4",
             "websocket-client>=1.8",
             "aiohttp>=3.11,<4",
             "httpx>=0.27",
@@ -686,6 +692,47 @@ def install_environment(comfy: Path) -> None:
     install_pinned_numpy_stack()
 
 
+def install_custom_node_requirements(
+    requirements: Path, *extra: str
+) -> None:
+    """Install custom-node extras without replacing protected runtime packages."""
+    filtered, skipped = filter_pinned_requirements(
+        requirements.read_text(encoding="utf-8").splitlines()
+    )
+    for package, requirement in skipped:
+        print(
+            f"[h3-setup] Keeping pinned {package}; "
+            f"skipping {requirements.parent.name} entry: {requirement}",
+            flush=True,
+        )
+    if not filtered and not extra:
+        return
+
+    requirement_path: Path | None = None
+    constraint_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".txt", dir=requirements.parent, delete=False
+        ) as handle:
+            handle.write("\n".join(filtered) + "\n")
+            requirement_path = Path(handle.name)
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".txt", delete=False
+        ) as handle:
+            handle.write("\n".join(INSTALL_CONSTRAINTS) + "\n")
+            constraint_path = Path(handle.name)
+        uv_pip(
+            "-r", str(requirement_path), *extra,
+            "--constraint", str(constraint_path),
+            no_deps=True,
+        )
+    finally:
+        if requirement_path is not None:
+            requirement_path.unlink(missing_ok=True)
+        if constraint_path is not None:
+            constraint_path.unlink(missing_ok=True)
+
+
 def sync_external_nodes(
     comfy: Path,
     *,
@@ -696,7 +743,10 @@ def sync_external_nodes(
         H3_AUDIO_T8_REPO,
         comfy / "custom_nodes" / "minimax-h3-audio-T8",
         ref=H3_AUDIO_T8_REF,
-        required_paths=("__init__.py", "nodes.py", "conditioning.py", "core.py"),
+        required_paths=(
+            "__init__.py", "h3_t8/nodes.py", "h3_t8/conditioning.py",
+            "h3_t8/core.py",
+        ),
     )
 
     sol = comfy / "custom_nodes" / "ComfyUI_sol-attn_Blackwell"
@@ -707,7 +757,7 @@ def sync_external_nodes(
         required_paths=("__init__.py",),
     )
     if install_requirements and (sol / "requirements.txt").is_file():
-        uv_pip("-r", str(sol / "requirements.txt"), no_deps=True)
+        install_custom_node_requirements(sol / "requirements.txt")
 
     sla = comfy / "custom_nodes" / "ComfyUI-PlagueKind-Nodes"
     sync_git_repo(
@@ -720,7 +770,7 @@ def sync_external_nodes(
         ),
     )
     if install_requirements and (sla / "requirements.txt").is_file():
-        uv_pip("-r", str(sla / "requirements.txt"), no_deps=True)
+        install_custom_node_requirements(sla / "requirements.txt")
 
     spectrum = comfy / "custom_nodes" / "ComfyUI-Spectrum-MiniMax-H3"
     sync_git_repo(
@@ -730,7 +780,18 @@ def sync_external_nodes(
         required_paths=("__init__.py",),
     )
     if install_requirements and (spectrum / "requirements.txt").is_file():
-        uv_pip("-r", str(spectrum / "requirements.txt"), no_deps=True)
+        install_custom_node_requirements(spectrum / "requirements.txt")
+
+    spectrum_qwen = comfy / "custom_nodes" / "ComfyUI-Spectrum-Qwen-Proper"
+    sync_git_repo(
+        SPECTRUM_QWEN_REPO,
+        spectrum_qwen,
+        ref=SPECTRUM_QWEN_REF,
+        required_paths=("__init__.py", "nodes.py"),
+    )
+    patch_qwen_spectrum_node(spectrum_qwen)
+    if install_requirements and (spectrum_qwen / "requirements.txt").is_file():
+        install_custom_node_requirements(spectrum_qwen / "requirements.txt")
 
     trt_vae = comfy / "custom_nodes" / "ComfyUI-H3VAE_TRT"
     sync_git_repo(
@@ -741,7 +802,7 @@ def sync_external_nodes(
     )
     patch_trt_vae_node(trt_vae)
     if install_requirements and (trt_vae / "requirements.txt").is_file():
-        uv_pip("-r", str(trt_vae / "requirements.txt"), no_deps=True)
+        install_custom_node_requirements(trt_vae / "requirements.txt")
 
     larry_turbo = comfy / "custom_nodes" / "ComfyUI-MiniMax-H3-Turbo"
     sync_git_repo(
@@ -752,7 +813,7 @@ def sync_external_nodes(
     )
     patch_larry_turbo_node(larry_turbo)
     if install_requirements and (larry_turbo / "requirements.txt").is_file():
-        uv_pip("-r", str(larry_turbo / "requirements.txt"), no_deps=True)
+        install_custom_node_requirements(larry_turbo / "requirements.txt")
 
     official_nodes = (
         (
@@ -785,17 +846,22 @@ def sync_external_nodes(
             if directory_name == "comfyui_controlnet_aux":
                 if install_requirements:
                     install_controlnet_aux_requirements(requirements)
+            elif directory_name == "ComfyUI-LTXVideo":
+                install_custom_node_requirements(requirements, *LTX_HDR_REQUIREMENTS)
             else:
-                uv_pip("-r", str(requirements), no_deps=True)
+                install_custom_node_requirements(requirements)
     ensure_controlnet_aux_runtime_dependencies(
         installed["comfyui_controlnet_aux"] / "requirements.txt"
     )
     # --no-deps deliberately protects the pinned CUDA/Torch stack, so install
     # the one dependency expressed only through transformers' `timm` extra.
     uv_pip("timm>=0.9.16,<2", no_deps=True)
-    # ComfyUI-LTXVideo imports ``pad`` from the pyramid module; that compatibility
-    # export was removed after Kornia 0.8.1.
-    uv_pip(f"kornia=={KORNIA_VERSION}", no_deps=True)
+    # Keep Kornia on the version checked with the current LTXVideo source.
+    uv_pip(
+        f"kornia=={KORNIA_VERSION}",
+        f"kornia-rs=={KORNIA_RS_VERSION}",
+        no_deps=True,
+    )
 
     workflow_source = installed["ComfyUI-LTXVideo"] / "example_workflows" / "2.5"
     workflow_destination = comfy / "user" / "default" / "workflows" / "LTX 2.5"
@@ -884,6 +950,8 @@ def main() -> None:
         comfy,
         install_requirements=not args.skip_env,
     )
+    if not args.skip_env:
+        uv_pip(HUGGINGFACE_HUB_REQUIREMENT, no_deps=True)
     sync_swiftvr_runtime(install_dir)
     if not torch_stack_matches():
         install_pinned_torch_stack()

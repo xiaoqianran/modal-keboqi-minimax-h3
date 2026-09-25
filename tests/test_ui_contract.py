@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -12,7 +13,7 @@ from h3_ui.presentation import (
     mode_presentation,
     result_format_presentation,
 )
-from h3_ui.styles import H3_SETUP_CSS, H3_UI_CSS
+from h3_ui.styles import H3_SETUP_CSS
 
 
 class UiContractTests(unittest.TestCase):
@@ -63,6 +64,25 @@ class UiContractTests(unittest.TestCase):
 
         return visit(cls.config["layout"])
 
+    def test_qwen_preset_is_wired_to_generation_controls(self):
+        controls = {c.get("props", {}).get("label"): c for c in self.config["components"]}
+        preset = controls["Qwen preset"]
+        self.assertEqual(preset["props"]["value"], "Quality")
+        self.assertEqual(
+            [choice[0] for choice in preset["props"]["choices"]],
+            ["Fast", "Normal", "Quality"],
+        )
+        event = next(
+            d for d in self.config["dependencies"] if d["inputs"] == [preset["id"]]
+            and d["outputs"] == [
+                controls["Diffusion model"]["id"],
+                controls["Turbo mode"]["id"],
+                controls["Steps"]["id"],
+                controls["Diffusion accelerator"]["id"],
+            ]
+        )
+        self.assertIs(event["queue"], False)
+
     def test_fl2va_voice_inputs_live_under_frames_and_have_separate_api_fields(self):
         controls = {c.get("props", {}).get("label"): c for c in self.config["components"]}
         first_id = controls["First frame (auto resolution)"]["id"]
@@ -77,13 +97,100 @@ class UiContractTests(unittest.TestCase):
         self.assertTrue(set(voice_ids) <= frame_group)
         self.assertFalse(set(ref_ids) & frame_group)
         advanced = next(d for d in self.config["dependencies"] if d.get("api_name") == "generate_video_advanced")
-        self.assertEqual(advanced["inputs"][-3:], voice_ids)
+        self.assertEqual(advanced["inputs"][-4:-1], voice_ids)
         self.assertTrue(set(ref_ids) <= set(advanced["inputs"]))
         parameters = self.demo.get_api_info()["named_endpoints"]["/generate_video_advanced"]["parameters"]
-        for parameter in parameters[-3:]:
+        for parameter in parameters[-4:-1]:
             self.assertTrue(parameter["parameter_has_default"])
             self.assertIsNone(parameter["parameter_default"])
 
+
+    def test_encoder_attention_toggle_is_default_off_and_bound_to_api(self):
+        toggle = next(c for c in self.config["components"] if c.get("props", {}).get("label") == "Qwen small input attention")
+        self.assertFalse(toggle["props"]["value"])
+        advanced = next(d for d in self.config["dependencies"] if d.get("api_name") == "generate_video_advanced")
+        self.assertEqual(advanced["inputs"][-1], toggle["id"])
+        parameter = self.demo.get_api_info()["named_endpoints"]["/generate_video_advanced"]["parameters"][-1]
+        self.assertTrue(parameter["parameter_has_default"])
+        self.assertFalse(parameter["parameter_default"])
+
+    def test_gallery_restoration_controls(self) -> None:
+        method = next(c for c in self.config["components"]
+                      if c.get("props", {}).get("label") == "Method")
+        choices = [choice[0] for choice in method["props"]["choices"]]
+        change = next(d for d in self.config["dependencies"]
+                      if any(t[0] == method["id"] and t[1] == "change" for t in d["targets"]))
+        callback = self.demo.fns[change["id"]].fn
+        for option in (
+            gradio_app.LTX25_DECOMPRESSION,
+            gradio_app.LTX25_DEBLUR,
+            gradio_app.LTX25_CQ_ENHANCER,
+        ):
+            self.assertIn(option, choices)
+            updates = callback(option)
+            self.assertEqual(
+                [u["visible"] for u in updates],
+                [True, False, option != gradio_app.LTX25_CQ_ENHANCER,
+                 True, True, False],
+            )
+            if option != gradio_app.LTX25_CQ_ENHANCER:
+                self.assertIn("Preserves source resolution", updates[2]["info"])
+        self.assertEqual([u["visible"] for u in callback(gradio_app.LTX25_UPSCALE)],
+                         [True, False, True, True, True, True])
+        self.assertEqual([u["visible"] for u in callback(gradio_app.SEEDVR2_UPSCALE)],
+                         [True, True, False, False, False, True])
+
+    def test_gallery_defaults_to_video_and_can_switch_to_images(self) -> None:
+        controls = {
+            component.get("props", {}).get("label"): component
+            for component in self.config["components"]
+        }
+        mode = controls["Gallery type"]
+        self.assertEqual(mode["props"]["value"], "Video")
+        self.assertEqual(
+            [choice[1] for choice in mode["props"]["choices"]],
+            ["Video", "Image", "Audio"],
+        )
+        self.assertTrue(controls["Selected video"]["props"]["visible"])
+        self.assertFalse(controls["Selected image"]["props"]["visible"])
+        self.assertFalse(controls["Selected audio"]["props"]["visible"])
+        for label in ("Selected video", "Selected image", "Selected audio"):
+            self.assertFalse(controls[label]["props"]["interactive"])
+
+        dependency = next(
+            item
+            for item in self.config["dependencies"]
+            if (mode["id"], "change") in item.get("targets", [])
+            and controls["Selected image"]["id"] in item.get("outputs", [])
+        )
+        updates = self.demo.fns[dependency["id"]].fn("Image")
+        self.assertFalse(updates[0]["visible"])
+        self.assertTrue(updates[1]["visible"])
+        self.assertFalse(updates[2]["visible"])
+        self.assertFalse(updates[5]["visible"])
+        self.assertEqual(updates[7]["choices"], [gradio_app.SEEDVR2_UPSCALE])
+        self.assertTrue(updates[9]["visible"])
+
+        tab_open = next(
+            item
+            for item in self.config["dependencies"]
+            if (mode["id"] in item.get("inputs", []))
+            and item.get("outputs", [])[:3] == [
+                controls["Selected video"]["id"],
+                controls["Selected image"]["id"],
+                controls["Selected audio"]["id"],
+            ]
+            and any(target[1] == "select" for target in item.get("targets", []))
+        )
+        opened = self.demo.fns[tab_open["id"]].fn("Image")
+        self.assertEqual([item["visible"] for item in opened[:3]], [False, True, False])
+
+        audio_updates = self.demo.fns[dependency["id"]].fn("Audio")
+        self.assertFalse(audio_updates[0]["visible"])
+        self.assertFalse(audio_updates[1]["visible"])
+        self.assertTrue(audio_updates[2]["visible"])
+        self.assertFalse(audio_updates[5]["visible"])
+        self.assertFalse(audio_updates[9]["visible"])
 
     def test_real_tabs_own_each_view(self) -> None:
         tabs = next(
@@ -97,12 +204,118 @@ class UiContractTests(unittest.TestCase):
         tab_nodes = layout["children"]
         self.assertEqual(
             [self.components[node["id"]]["props"]["label"] for node in tab_nodes],
-            ["MiniMax H3", "LTX 2.5", "MiniMax Music 3", "Gallery", "API"],
+            [
+                "MiniMax H3",
+                "Qwen Image 2.1",
+                "LTX 2.5",
+                "MiniMax Music 3",
+                "YuE2",
+                "Gallery",
+                "API",
+            ],
         )
         self.assertEqual(
             [self.components[node["children"][0]["id"]]["type"] for node in tab_nodes],
-            ["row", "group", "group", "group", "group"],
+            ["row", "group", "group", "group", "group", "group", "group"],
         )
+
+    def test_non_h3_generated_media_outputs_are_display_only(self) -> None:
+        labels = {
+            "Generated image",
+            "Generated LTX-2.5 video",
+            "Generated song",
+        }
+        outputs = [
+            component
+            for component in self.config["components"]
+            if component.get("props", {}).get("label") in labels
+        ]
+        self.assertEqual(len(outputs), 4)
+        for output in outputs:
+            self.assertFalse(output["props"]["interactive"], output["props"]["label"])
+
+    def test_all_gemini_prompt_writers_default_to_flash_lite(self) -> None:
+        models = [
+            component
+            for component in self.config["components"]
+            if component.get("props", {}).get("label") == "Gemini model"
+        ]
+        self.assertEqual(len(models), 5)
+        for model in models:
+            self.assertEqual(model["props"]["value"], "gemini-3.5-flash-lite")
+
+    def test_all_prompt_writers_default_to_lightning_and_bind_credentials(self) -> None:
+        writers = [
+            component
+            for component in self.config["components"]
+            if component.get("props", {}).get("label") == "Prompt writer"
+        ]
+        self.assertEqual(len(writers), 5)
+        for writer in writers:
+            self.assertEqual(writer["props"]["value"], "Lightning AI")
+
+        endpoints = {
+            dependency.get("api_name"): dependency
+            for dependency in self.config["dependencies"]
+        }
+        for endpoint in (
+            "enhance_ltx25_prompt",
+            "enhance_music3_prompt",
+            "enhance_yue2_prompt",
+        ):
+            inputs = endpoints[endpoint]["inputs"]
+            self.assertEqual(
+                [self.components[id]["props"]["label"] for id in inputs[-2:]],
+                ["Prompt writer", "Temporary Lightning API key"],
+            )
+            parameters = self.demo.get_api_info()["named_endpoints"][f"/{endpoint}"]["parameters"]
+            self.assertEqual(parameters[-2]["parameter_default"], "Lightning AI")
+
+        qwen_endpoint = "enhance_qwen_image21_prompt"
+        qwen_inputs = endpoints[qwen_endpoint]["inputs"]
+        self.assertEqual(
+            [self.components[id]["props"]["label"] for id in qwen_inputs[-3:]],
+            ["Prompt writer", "Temporary Lightning API key", "Edit output size"],
+        )
+        qwen_parameters = self.demo.get_api_info()["named_endpoints"][f"/{qwen_endpoint}"]["parameters"]
+        self.assertEqual(qwen_parameters[-3]["parameter_default"], "Lightning AI")
+
+    def test_qwen_edit_size_is_one_radio_input(self) -> None:
+        controls = {
+            component.get("props", {}).get("label"): component
+            for component in self.config["components"]
+        }
+        edit_size = controls["Edit output size"]
+        self.assertEqual(edit_size["type"], "radio")
+        self.assertEqual(
+            [choice[1] for choice in edit_size["props"]["choices"]],
+            [
+                "Match first image size",
+                "Max resolution (up to 4 MP)",
+                "Use width and height above",
+            ],
+        )
+        self.assertEqual(edit_size["props"]["value"], "Match first image size")
+        self.assertNotIn("Match first image size when editing", controls)
+        self.assertNotIn("Max resolution when editing", controls)
+        endpoints = {
+            dependency.get("api_name"): dependency
+            for dependency in self.config["dependencies"]
+        }
+        self.assertIn(edit_size["id"], endpoints["generate_qwen_image21"]["inputs"])
+        self.assertIn(
+            edit_size["id"], endpoints["enhance_qwen_image21_prompt"]["inputs"]
+        )
+
+    def test_qwen_and_yue2_prompt_writer_endpoints_are_bound(self) -> None:
+        endpoints = {
+            dependency.get("api_name"): dependency
+            for dependency in self.config["dependencies"]
+        }
+        self.assertIn("enhance_qwen_image21_prompt", endpoints)
+        self.assertIn("enhance_yue2_prompt", endpoints)
+        self.assertEqual(len(endpoints["enhance_qwen_image21_prompt"]["outputs"]), 2)
+        self.assertEqual(len(endpoints["enhance_yue2_prompt"]["outputs"]), 3)
 
     def test_custom_server_mount_receives_ui_styles(self) -> None:
         with (
@@ -157,6 +370,21 @@ class UiContractTests(unittest.TestCase):
             )
         )
 
+    def test_fast_and_singularity_default_to_int8_video_vae(self) -> None:
+        controls = {
+            c.get("props", {}).get("label"): c for c in self.config["components"]
+        }
+        self.assertTrue(controls["INT8 ConvRot video VAE"]["props"]["value"])
+        preset = controls["Generation preset"]
+        int8 = controls["INT8 ConvRot video VAE"]
+        trt = controls["Experimental TensorRT video VAE"]
+        transition = next(
+            d for d in self.config["dependencies"]
+            if (preset["id"], "input") in d.get("targets", [])
+        )
+        self.assertIn(int8["id"], transition["outputs"])
+        self.assertIn(trt["id"], transition["outputs"])
+
     def test_settings_transition_owns_summary_and_bypasses_gpu_queue(self) -> None:
         controls = {
             c.get("props", {}).get("label"): c for c in self.config["components"]
@@ -181,22 +409,22 @@ class UiContractTests(unittest.TestCase):
     def test_resolution_presets_apply_latent_alignment_atomically(self) -> None:
         self.assertEqual(
             gradio_app.resolution_choice_updates(
-                "16:9 · 864×480", "fast", True, "Video"
+                "16:9 · 1920×1088", "fast", True, "Video"
             )[:2],
-            (896, 512),
+            (1920, 1088),
         )
         self.assertEqual(
             gradio_app.resolution_choice_updates(
-                "16:9 · 864×480", "fast", False, "Video"
+                "16:9 · 1920×1088", "fast", False, "Video"
             )[:2],
-            (864, 480),
+            (1920, 1088),
         )
 
         controls = {
             component.get("props", {}).get("label"): component
             for component in self.config["components"]
         }
-        preset = controls["Recommended size"]
+        preset = controls["1080p"]
         dependencies = [
             dependency
             for dependency in self.config["dependencies"]
@@ -230,44 +458,336 @@ class UiContractTests(unittest.TestCase):
                         self.assertEqual(height % alignment, 0)
                         self.assertTrue(info)
 
-    def test_tensorrt_vae_defaults_on_and_compiles_only_when_needed(self) -> None:
+    def test_resolution_quick_presets_share_single_rows(self) -> None:
+        controls = {
+            component.get("props", {}).get("label"): component
+            for component in self.config["components"]
+        }
+
+        def assert_same_row(labels):
+            ids = {controls[label]["id"] for label in labels}
+
+            def descendants(node):
+                return {node["id"]} | set().union(
+                    *(descendants(child) for child in node.get("children", []))
+                )
+
+            rows = (
+                self.find_layout_node(component["id"])
+                for component in self.config["components"]
+                if component["type"] == "row"
+            )
+            self.assertTrue(
+                any(row and ids <= descendants(row) for row in rows)
+            )
+
+        assert_same_row(("768p", "1080p", "2k"))
+        assert_same_row(("Square", "Landscape", "Portrait"))
+
+        for label, expected in (
+            ("Square", (1024, 1024)),
+            ("Landscape", (1376, 1024)),
+            ("Portrait", (1024, 1376)),
+        ):
+            preset = controls[label]
+            dependency = next(
+                item
+                for item in self.config["dependencies"]
+                if (preset["id"], "change") in item.get("targets", [])
+            )
+            callback = self.demo.fns[dependency["id"]]
+            choice = preset["props"]["choices"][0][1]
+            self.assertEqual(callback.fn(choice), expected)
+
+        self.assertEqual(len(controls["Square"]["props"]["choices"]), 2)
+        self.assertEqual(len(controls["Landscape"]["props"]["choices"]), 6)
+        self.assertEqual(len(controls["Portrait"]["props"]["choices"]), 6)
+
+    def test_first_frame_and_auto_megapixels_resolution_bindings(self) -> None:
+        controls = {
+            component.get("props", {}).get("label"): component
+            for component in self.config["components"]
+        }
+        first_frame = controls["First frame (auto resolution)"]
+        auto_cap = controls["Start-frame auto cap"]
+        summary = next(
+            c
+            for c in self.config["components"]
+            if "h3-settings-summary" in c.get("props", {}).get("elem_classes", [])
+        )
+
+        # One committed-value path handles upload, clear, and replacements.
+        # A generic first-frame input handler must not race it with stale size.
+        first_deps = [
+            d for d in self.config["dependencies"]
+            if any(target[0] == first_frame["id"] for target in d.get("targets", []))
+        ]
+        self.assertEqual([d["targets"][0][1] for d in first_deps], ["change"])
+        first_change_dep = first_deps[0]
+        self.assertFalse(first_change_dep.get("js"))
+        h3_width_id = first_change_dep["outputs"][0]
+        h3_height_id = first_change_dep["outputs"][1]
+        self.assertEqual(self.components[h3_width_id].get("props", {}).get("label"), "Width")
+        self.assertEqual(self.components[h3_height_id].get("props", {}).get("label"), "Height")
+
+        first_refresh_dep = next(
+            d for d in self.config["dependencies"]
+            if d.get("trigger_after") == first_change_dep["id"]
+        )
+        self.assertIn(summary["id"], first_refresh_dep["outputs"])
+        output_accordion = controls["Output essentials"]
+        self.assertFalse(output_accordion["props"]["open"])
+
+        # 3. Start-frame auto cap triggers on .change (so preset changes trigger auto resolution),
+        # then refreshes summary
+        auto_cap_change_dep = next(
+            d for d in self.config["dependencies"]
+            if (auto_cap["id"], "change") in d.get("targets", [])
+            and h3_width_id in d.get("outputs", [])
+        )
+        self.assertIsNotNone(auto_cap_change_dep)
+        auto_cap_refresh_dep = next(
+            d for d in self.config["dependencies"]
+            if d.get("trigger_after") == auto_cap_change_dep["id"]
+        )
+        self.assertIn(summary["id"], auto_cap_refresh_dep["outputs"])
+
+    def test_auto_resolution_pipeline_updates_next_run_and_preset_change_applies_cap(self) -> None:
+        import os
+        import tempfile
+        from PIL import Image
+
+        temp_img = os.path.join(tempfile.gettempdir(), "test_ui_contract_768_1152.png")
+        im = Image.new("RGB", (768, 1152), color=(255, 0, 0))
+        im.save(temp_img)
+
+        # 1. auto_resolution_from_start_frame calculates 768x1152
+        w, h, info = gradio_app.auto_resolution_from_start_frame(
+            temp_img, 1408, 768, "Video", False, "1 MP"
+        )
+        self.assertEqual((w, h), (768, 1152))
+
+        # Find controller and run refresh with the new resolution
+        refresh_fn = next(
+            fn for fn in self.demo.fns.values()
+            if hasattr(fn.fn, "__self__") and type(fn.fn.__self__).__name__ == "SettingsController"
+        )
+        controller = refresh_fn.fn.__self__
+
+        memory = {"active": "Turbo", "modes": {}, "values": {name: getattr(controller.components[name], "value", None) for name in controller.names}}
+        memory["values"]["width"] = 1408
+        memory["values"]["height"] = 768
+
+        # Stale inputs produce 1408x768
+        input_values_stale = [
+            1408 if controller.ids.get(getattr(comp, "_id", None)) == "width"
+            else 768 if controller.ids.get(getattr(comp, "_id", None)) == "height"
+            else getattr(comp, "value", None)
+            for comp in controller.inputs
+        ]
+        out_stale = controller.refresh(memory, *input_values_stale)
+        summary_stale = out_stale[-3]
+        self.assertIn("1408×768", summary_stale)
+        self.assertNotIn("768×1152", summary_stale)
+
+        # Updated inputs (from upload/change pipeline) produce 768x1152
+        input_values_new = [
+            w if controller.ids.get(getattr(comp, "_id", None)) == "width"
+            else h if controller.ids.get(getattr(comp, "_id", None)) == "height"
+            else temp_img if controller.ids.get(getattr(comp, "_id", None)) == "first"
+            else getattr(comp, "value", None)
+            for comp in controller.inputs
+        ]
+        out_new = controller.refresh(memory, *input_values_new)
+        summary_new = out_new[-3]
+        self.assertIn("768×1152", summary_new)
+        self.assertNotIn("1408×768", summary_new)
+
+        # 2. When preset changes auto_megapixels cap (e.g. from 1 MP to 2 MP on a large image),
+        # auto_resolution_from_start_frame applies the new cap
+        large_img = os.path.join(tempfile.gettempdir(), "test_ui_contract_large.png")
+        im_large = Image.new("RGB", (3000, 2000), color=(0, 255, 0))
+        im_large.save(large_img)
+
+        w_1mp, h_1mp, _ = gradio_app.auto_resolution_from_start_frame(
+            large_img, 1408, 768, "Video", False, "1 MP"
+        )
+        w_2mp, h_2mp, _ = gradio_app.auto_resolution_from_start_frame(
+            large_img, w_1mp, h_1mp, "Video", False, "2 MP"
+        )
+        self.assertLess(w_1mp * h_1mp, 1_000_000)
+        self.assertGreater(w_2mp * h_2mp, w_1mp * h_1mp)
+        self.assertLess(w_2mp * h_2mp, 2_000_000)
+
+
+
+    def test_tensorrt_vae_defaults_off_and_compiles_only_when_needed(self) -> None:
         trt_vae = next(
             component
             for component in self.config["components"]
             if component.get("props", {}).get("label")
             == "Experimental TensorRT video VAE"
         )
-        self.assertTrue(trt_vae["props"]["value"])
+        self.assertFalse(trt_vae["props"]["value"])
 
         models = mock.sentinel.models
         progress = mock.sentinel.progress
         with (
-            mock.patch.object(gradio_app, "ensure_trt_video_vae") as provision,
+            mock.patch.object(gradio_app.model_service, "ensure_trt_video_vae") as provision,
             mock.patch.object(
-                gradio_app, "trt_vae_engine_is_current", return_value=False
+                gradio_app.model_service, "trt_vae_engine_is_current", return_value=False
             ),
-            mock.patch.object(gradio_app, "_build_trt_video_vae_engine") as build,
+            mock.patch.object(gradio_app.model_service, "_build_trt_video_vae_engine") as build,
         ):
             self.assertTrue(
                 gradio_app.ensure_trt_video_vae_engine(models, progress=progress)
             )
         provision.assert_has_calls(
-            [mock.call(models, require_engine=False), mock.call(models)]
+            [mock.call(models, require_engine=False, runtime=gradio_app._runtime_config()), mock.call(models, runtime=gradio_app._runtime_config())]
         )
-        build.assert_called_once_with(models, progress)
+        build.assert_called_once_with(models, progress, runtime=gradio_app._runtime_config(), release_backend=gradio_app.unload_comfy_models)
 
         with (
-            mock.patch.object(gradio_app, "ensure_trt_video_vae") as provision,
+            mock.patch.object(gradio_app.model_service, "ensure_trt_video_vae") as provision,
             mock.patch.object(
-                gradio_app, "trt_vae_engine_is_current", return_value=True
+                gradio_app.model_service, "trt_vae_engine_is_current", return_value=True
             ),
-            mock.patch.object(gradio_app, "_build_trt_video_vae_engine") as build,
+            mock.patch.object(gradio_app.model_service, "_build_trt_video_vae_engine") as build,
         ):
             self.assertFalse(
                 gradio_app.ensure_trt_video_vae_engine(models, progress=progress)
             )
-        provision.assert_called_once_with(models, require_engine=False)
-        build.assert_not_called()
+            self.assertTrue(
+                gradio_app.ensure_trt_video_vae_engine(
+                    models, force=True, progress=progress
+                )
+            )
+        provision.assert_has_calls(
+            [
+                mock.call(models, require_engine=False, runtime=gradio_app._runtime_config()),
+                mock.call(models, require_engine=False, runtime=gradio_app._runtime_config()),
+                mock.call(models, runtime=gradio_app._runtime_config()),
+            ]
+        )
+        build.assert_called_once_with(models, progress, runtime=gradio_app._runtime_config(), release_backend=gradio_app.unload_comfy_models)
+
+        with (
+            mock.patch.object(gradio_app, "load_model_config", return_value=models),
+            mock.patch.object(
+                gradio_app, "ensure_trt_video_vae_engine", return_value=True
+            ) as ensure_engine,
+        ):
+            status = gradio_app.compile_trt_video_vae(progress=progress)
+            self.assertIn("compiled and ready to use", status)
+            ensure_engine.assert_called_once_with(models, force=True, progress=progress)
+
+    def test_tensorrt_vae_currency_checks_fingerprint_and_loadability(self) -> None:
+        models = mock.sentinel.models
+        with (
+            mock.patch.object(
+                gradio_app.model_service,
+                "trt_vae_decoder_paths",
+                return_value=(
+                    Path("/fake/decoder.onnx"),
+                    Path("/fake/decoder.engine"),
+                    Path("/fake/marker"),
+                ),
+            ),
+            mock.patch.object(Path, "is_file", return_value=True),
+            mock.patch.object(
+                gradio_app.model_service, "trt_vae_runtime_fingerprint", return_value="v4:trt_10.9:sm_89"
+            ),
+        ):
+            # Mismatched marker (e.g. from an older TRT version 243)
+            with mock.patch.object(Path, "read_text", return_value="v4:trt_10.8:sm_89"):
+                self.assertFalse(gradio_app.trt_vae_engine_is_current(models))
+
+            # Matching marker but deserialization fails (returns None)
+            with (
+                mock.patch.object(Path, "read_text", return_value="v4:trt_10.9:sm_89"),
+                mock.patch.object(gradio_app.model_service, "is_trt_engine_loadable", return_value=False),
+            ):
+                self.assertFalse(gradio_app.trt_vae_engine_is_current(models))
+
+            # Matching marker and loadable engine
+            with (
+                mock.patch.object(Path, "read_text", return_value="v4:trt_10.9:sm_89"),
+                mock.patch.object(gradio_app.model_service, "is_trt_engine_loadable", return_value=True),
+            ):
+                self.assertTrue(gradio_app.trt_vae_engine_is_current(models))
+
+    def test_gpu_actions_share_the_application_queue(self):
+        expected = {
+            "compile_trt_video_vae",
+            "generate_for_ui",
+            "generate_ltx25",
+            "generate_music3",
+            "generate_qwen_image21",
+            "generate_yue2",
+            "unload_all_models",
+        }
+        found = set()
+        for event in self.demo.fns.values():
+            name = getattr(event.fn, "__name__", "")
+            if name in expected:
+                found.add(name)
+                self.assertEqual(event.concurrency_id, "h3-gpu", name)
+                self.assertEqual(event.concurrency_limit, 1, name)
+        self.assertEqual(found, expected)
+
+    def test_prompt_writers_use_a_queue_separate_from_model_downloads(self):
+        expected = {
+            "enhance_h3_prompt",
+            "enhance_ltx25_prompt",
+            "enhance_music3_prompt",
+            "enhance_qwen_image21_prompt",
+            "enhance_yue2_prompt",
+        }
+        found = set()
+        for event in self.demo.fns.values():
+            name = getattr(event.fn, "__name__", "")
+            if name in expected:
+                found.add(name)
+                self.assertEqual(event.concurrency_id, "h3-prompt", name)
+                self.assertEqual(event.concurrency_limit, 4, name)
+        self.assertEqual(found, expected)
+
+    def test_only_local_h3_writer_uses_the_gpu_lease(self):
+        signature = inspect.signature(gradio_app.enhance_h3_prompt)
+        arguments = [
+            None if parameter.default is inspect.Parameter.empty else parameter.default
+            for parameter in signature.parameters.values()
+        ]
+        with (
+            mock.patch.object(gradio_app.JOBS, "maintenance") as maintenance,
+            mock.patch.object(gradio_app.prompt_service, "enhance_h3_prompt", return_value=("rewritten", "ok")),
+            mock.patch.object(gradio_app, "_runtime_config", return_value=mock.sentinel.runtime),
+        ):
+            for backend in ("Lightning AI", "Gemini"):
+                arguments[1] = backend
+                self.assertEqual(gradio_app.enhance_h3_prompt(*arguments), ("rewritten", "ok"))
+            maintenance.assert_not_called()
+            arguments[1] = "Local MiniMax-H3 8B"
+            self.assertEqual(gradio_app.enhance_h3_prompt(*arguments), ("rewritten", "ok"))
+            maintenance.assert_called_once_with("prompt-enhance")
+
+    def test_non_gpu_media_actions_bypass_the_application_queue(self):
+        expected = {
+            "refresh_media_gallery",
+            "select_gallery_media",
+            "import_gallery_media",
+            "delete_selected_gallery_media",
+            "empty_generated_media_gallery",
+            "save_selected_image_frames",
+        }
+        found = set()
+        for event in self.demo.fns.values():
+            name = getattr(event.fn, "__name__", "")
+            if name in expected:
+                found.add(name)
+                self.assertFalse(event.queue, name)
+                self.assertNotEqual(event.concurrency_id, "h3-gpu", name)
+        self.assertEqual(found, expected)
 
     def test_h3_progressive_section_order(self) -> None:
         tabs = next(

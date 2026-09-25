@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
 import logging
 import math
@@ -7,6 +9,9 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -14,6 +19,7 @@ import av
 import torch
 import torch.nn.functional as F
 import comfy.lora
+import comfy.cli_args
 import comfy.model_management
 import comfy.nested_tensor
 import comfy.patcher_extension
@@ -975,68 +981,177 @@ class H3VideoLatentSlicesToBatch:
         return (output,)
 
 
+# Upstream hardcodes small_input=True in both Qwen3-VL attention selectors.
+# Install context-aware dispatchers once; only this CLIP encoding context can
+# override that hint. Other models/threads retain their original dispatch.
+_H3_ENCODER_SMALL_INPUT = ContextVar("h3_encoder_small_input", default=None)
+_H3_ENCODER_ATTENTION_LOCK = threading.Lock()
+
+
+def _h3_encoder_attention_selector(original):
+    @wraps(original)
+    def select(device, mask=False, small_input=False):
+        override = _H3_ENCODER_SMALL_INPUT.get()
+        return original(
+            device, mask=mask,
+            small_input=small_input if override is None else override,
+        )
+
+    select._h3_encoder_dispatch = True
+    return select
+
+
+@contextmanager
+def _h3_encoder_attention(small_input):
+    with _H3_ENCODER_ATTENTION_LOCK:
+        for name in ("comfy.text_encoders.llama", "comfy.text_encoders.qwen35"):
+            module = importlib.import_module(name)
+            original = module.optimized_attention_for_device
+            if not getattr(original, "_h3_encoder_dispatch", False):
+                module.optimized_attention_for_device = _h3_encoder_attention_selector(original)
+    token = _H3_ENCODER_SMALL_INPUT.set(bool(small_input))
+    try:
+        logging.info(
+            "MiniMax H3 Qwen text/vision attention: %s",
+            "small input (PyTorch/basic)" if small_input else "configured server backend",
+        )
+        yield
+    finally:
+        _H3_ENCODER_SMALL_INPUT.reset(token)
+
+
+def _h3_encoder_input_signature(value):
+    """Describe the actual token sequence and vision geometry without hashing pixels.
+
+    The graph cache key already identifies source media (content-addressed when
+    reuse is on). Resizing/cropping and video truncation happen inside the native
+    node, so include the resulting token structure, tensor shapes and dtypes too.
+    Unknown input types disable reuse rather than risk an incomplete signature.
+    """
+    if torch.is_tensor(value):
+        return ("tensor", tuple(value.shape), str(value.dtype))
+    if isinstance(value, dict):
+        return ("dict", tuple(
+            (key, _h3_encoder_input_signature(item))
+            for key, item in sorted(value.items())
+        ))
+    if isinstance(value, (tuple, list)):
+        return (type(value).__name__, tuple(
+            _h3_encoder_input_signature(item) for item in value
+        ))
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(f"Unsupported encoder cache input: {type(value).__name__}")
+
+
 class _H3ConditioningReuseCache:
-    """Small process-local cache keyed only by encoder conditioning inputs."""
+    """Bounded process-local cache of Qwen results, independent of VAE latents."""
 
     def __init__(self, max_entries: int = 2) -> None:
-        self._entries: OrderedDict[str, object] = OrderedDict()
+        self._entries: OrderedDict[tuple[str, str], object] = OrderedDict()
         self._fresh_since_policy: dict[str, bool] = {}
         self._max_entries = max_entries
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._encoder_small_input = None
+        self._attention_revision = 0
 
-    def encode(self, cache_key: str, encode):
+    def select_attention(self, small_input: bool) -> int:
         with self._lock:
-            if cache_key in self._entries:
-                conditioning = self._entries[cache_key]
-                self._entries.move_to_end(cache_key)
-                logging.info("MiniMax H3 reused cached text/media conditioning")
+            if self._encoder_small_input != small_input:
+                self._entries.clear()
+                self._fresh_since_policy.clear()
+                self._encoder_small_input = small_input
+                self._attention_revision += 1
+                logging.info("MiniMax H3 invalidated conditioning for Qwen attention change")
+            return self._attention_revision
+
+    def encode(self, cache_key: str, encode, small_input: bool = True,
+               *, reuse: bool = True, input_signature: str = ""):
+        entry_key = (cache_key, input_signature)
+        with self._lock:
+            revision = self.select_attention(small_input)
+            if reuse and entry_key in self._entries:
+                conditioning = self._entries[entry_key]
+                self._entries.move_to_end(entry_key)
+                logging.info(
+                    "MiniMax H3 Qwen cache hit [key=%s input=%s]; VAE conditioning is separate",
+                    cache_key[:12], input_signature[:12],
+                )
                 return conditioning
 
+        logging.info(
+            "MiniMax H3 Qwen cache %s [key=%s input=%s]; encoding fresh",
+            "miss" if reuse else "disabled", cache_key[:12], input_signature[:12],
+        )
         conditioning = encode()
         with self._lock:
-            self._entries[cache_key] = conditioning
-            self._entries.move_to_end(cache_key)
+            # Do not publish a result from an older route if another execution
+            # changed policy while this encode was in flight.
+            if revision != self._attention_revision:
+                return conditioning
+            if not reuse:
+                for key in list(self._entries):
+                    if key[0] == cache_key:
+                        del self._entries[key]
+                self._fresh_since_policy.pop(cache_key, None)
+                return conditioning
             self._fresh_since_policy[cache_key] = True
+            self._entries[entry_key] = conditioning
+            self._entries.move_to_end(entry_key)
             while len(self._entries) > self._max_entries:
                 evicted_key, _value = self._entries.popitem(last=False)
-                self._fresh_since_policy.pop(evicted_key, None)
+                if not any(key[0] == evicted_key[0] for key in self._entries):
+                    self._fresh_since_policy.pop(evicted_key[0], None)
         return conditioning
 
     def conditioning_was_reused(self, cache_key: str) -> bool:
         with self._lock:
-            if cache_key not in self._entries:
-                return False
             fresh = self._fresh_since_policy.pop(cache_key, False)
-            return not fresh
+            return not fresh and any(key[0] == cache_key for key in self._entries)
 
 
 _H3_CONDITIONING_REUSE_CACHE = _H3ConditioningReuseCache()
 
 
 class _H3CachedCLIPProxy:
-    def __init__(self, clip, cache_key: str) -> None:
+    def __init__(self, clip, cache_key: str, encoder_small_input: bool = True,
+                 reuse_conditioning: bool = True) -> None:
         self._clip = clip
         self._cache_key = cache_key
+        self._encoder_small_input = bool(encoder_small_input)
+        self._reuse_conditioning = bool(reuse_conditioning)
 
     def __getattr__(self, name):
         return getattr(self._clip, name)
 
     def clone(self, *args, **kwargs):
-        # Native H3 nodes clone CLIP before encoding. Preserve the proxy so
-        # both latent-upscale stages use the same prompt/media cache entry.
-        return type(self)(self._clip.clone(*args, **kwargs), self._cache_key)
+        return type(self)(
+            self._clip.clone(*args, **kwargs), self._cache_key,
+            self._encoder_small_input, self._reuse_conditioning,
+        )
 
     def encode_from_tokens_scheduled(self, tokens, *args, **kwargs):
+        def encode():
+            with _h3_encoder_attention(self._encoder_small_input):
+                return self._clip.encode_from_tokens_scheduled(tokens, *args, **kwargs)
+
+        reuse = self._reuse_conditioning
+        input_signature = ""
+        if reuse:
+            try:
+                signature = _h3_encoder_input_signature((tokens, args, kwargs))
+                input_signature = hashlib.sha256(repr(signature).encode("utf-8")).hexdigest()
+            except TypeError as exc:
+                logging.info("MiniMax H3 Qwen cache bypass: %s", exc)
+                reuse = False
         return _H3_CONDITIONING_REUSE_CACHE.encode(
-            self._cache_key,
-            lambda: self._clip.encode_from_tokens_scheduled(
-                tokens, *args, **kwargs
-            ),
+            self._cache_key, encode, self._encoder_small_input,
+            reuse=reuse, input_signature=input_signature,
         )
 
 
 class H3ConditioningCache:
-    """Wrap H3 CLIP so unchanged prompt/media conditioning skips encoding."""
+    """Wrap H3 CLIP with scoped attention routing and optional encoding reuse."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1044,19 +1159,33 @@ class H3ConditioningCache:
             "required": {
                 "clip": ("CLIP",),
                 "cache_key": ("STRING", {"default": ""}),
-            }
+            },
+            "optional": {
+                "encoder_small_input": ("BOOLEAN", {"default": True}),
+                "reuse_conditioning": ("BOOLEAN", {"default": True}),
+            },
         }
 
     RETURN_TYPES = ("CLIP",)
     FUNCTION = "wrap"
     CATEGORY = "model/management/minimax"
     DESCRIPTION = (
-        "Caches H3 text/media conditioning independently from resolution, "
-        "duration, seed, sampler, and other generation-only settings."
+        "Reuses matching Qwen token/vision inputs. VAE conditioning remains owned "
+        "by the conditioning node. Disabling reuse forces fresh encoding."
     )
 
-    def wrap(self, clip, cache_key):
-        return (_H3CachedCLIPProxy(clip, str(cache_key)),)
+    @classmethod
+    def IS_CHANGED(cls, clip, cache_key, encoder_small_input=True, reuse_conditioning=True):
+        revision = _H3_CONDITIONING_REUSE_CACHE.select_attention(bool(encoder_small_input))
+        # Force dependent native/T8 conditioning nodes to run even for text-only
+        # requests, where there is no staged media filename to invalidate them.
+        return revision if reuse_conditioning else float("nan")
+
+    def wrap(self, clip, cache_key, encoder_small_input=True, reuse_conditioning=True):
+        _H3_CONDITIONING_REUSE_CACHE.select_attention(bool(encoder_small_input))
+        return (_H3CachedCLIPProxy(
+            clip, str(cache_key), encoder_small_input, reuse_conditioning,
+        ),)
 
 
 def _offload_h3_models(label: str) -> None:
@@ -1177,6 +1306,76 @@ class H3StageModelOffload:
         if enabled:
             _offload_h3_models("stage offload")
         return conditioning, latent, additional_conditioning, additional_latent
+
+
+_H3_REFINEMENT_COMPILER_LOCK = threading.RLock()
+
+
+def _h3_refinement_video_volume(value) -> int:
+    """Return T*H*W for an H3 video latent, or zero for unknown inputs."""
+    tensors = getattr(value, "tensors", None)
+    video = tensors[0] if isinstance(tensors, (list, tuple)) and tensors else value
+    shape = getattr(video, "shape", ())
+    if len(shape) < 5:
+        return 0
+    return math.prod(int(dimension) for dimension in shape[-3:])
+
+
+def _make_h3_refinement_compiler_wrapper(min_video_volume: int):
+    """Bypass AIMDO only for exceptionally large refinement model calls."""
+    state = {"logged": False}
+
+    def wrapper(executor, x, *args, **kwargs):
+        volume = _h3_refinement_video_volume(x)
+        if volume < min_video_volume:
+            return executor(x, *args, **kwargs)
+
+        with _H3_REFINEMENT_COMPILER_LOCK:
+            previous = bool(comfy.cli_args.args.disable_comfy_compiler)
+            comfy.cli_args.args.disable_comfy_compiler = True
+            try:
+                if not state["logged"]:
+                    logging.info(
+                        "MiniMax H3 refinement bypassing Comfy compiler for "
+                        "large video latent volume %d (threshold %d)",
+                        volume,
+                        min_video_volume,
+                    )
+                    state["logged"] = True
+                return executor(x, *args, **kwargs)
+            finally:
+                comfy.cli_args.args.disable_comfy_compiler = previous
+
+    return wrapper
+
+
+class H3RefinementCompilerGuard:
+    """Disable malloc-graph capture only for exceptionally large refinement."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "min_video_volume": (
+                    "INT",
+                    {"default": 1_500_000, "min": 1, "max": 100_000_000},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+    CATEGORY = "model/management/minimax"
+
+    def patch(self, model, min_video_volume=1_500_000):
+        patched = model.clone()
+        patched.add_wrapper_with_key(
+            comfy.patcher_extension.WrappersMP.APPLY_MODEL,
+            f"h3_refinement_compiler_guard_{id(patched)}",
+            _make_h3_refinement_compiler_wrapper(max(1, int(min_video_volume))),
+        )
+        return (patched,)
 
 
 class H3SaveVideoNVENC:
@@ -1485,7 +1684,260 @@ class H3SemanticBridge:
         return (result,)
 
 
+class H3Qwen21TurboSigmas:
+    """Viggle v0.2 raw nodes with Qwen Image 2.1's dynamic time shift.
+
+    Comfy's Qwen model has a fixed shift at load time; the five-step adapter
+    needs the resolution-dependent shift used by its training pipeline.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "latent_image": ("LATENT",),
+            "steps": ("INT", {"default": 5, "min": 1, "max": 100}),
+        }}
+
+    RETURN_TYPES = ("SIGMAS",)
+    FUNCTION = "calculate"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+
+    def calculate(self, latent_image, steps):
+        samples = latent_image["samples"]
+        # Qwen's packed image tokens are two latent pixels wide and high.
+        tokens = (int(samples.shape[-2]) // 2) * (int(samples.shape[-1]) // 2)
+        mu = 0.5 + 0.4 * (tokens - 256) / (8192 - 256)
+        count = int(steps)
+        raw = (
+            (1.0, 0.875, 0.75, 0.5, 0.25)
+            if count == 5
+            else tuple(1.0 - index / count for index in range(count))
+        )
+        exponent = math.exp(mu)
+        shifted = [
+            exponent / (exponent + (1.0 / value - 1.0))
+            for value in raw
+        ]
+        # Viggle's scheduler has shift_terminal=null; no terminal stretch.
+        return (torch.tensor([*shifted, 0.0], dtype=torch.float32),)
+
+
+class H3Qwen21PrunaSigmas:
+    """Pruna v0.1 adapter-specific sigma nodes, already shifted by its training schedule."""
+
+    SCHEDULES = {
+        5: (1.0, 0.94, 6 / 7, 2 / 3, 0.4, 0.0),
+        8: (1.0, 14 / 15, 6 / 7, 10 / 13, 2 / 3, 6 / 11, 0.4, 2 / 9, 0.0),
+    }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "steps": ("INT", {"default": 8, "min": 5, "max": 8}),
+        }}
+
+    RETURN_TYPES = ("SIGMAS",)
+    FUNCTION = "calculate"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+
+    def calculate(self, steps):
+        count = int(steps)
+        if count not in self.SCHEDULES:
+            raise ValueError("Pruna Qwen Image 2.1 supports only 5 or 8 steps.")
+        # Comfy's custom sampler consumes these values directly; do not apply
+        # the base model's resolution-dependent time shift a second time.
+        return (torch.tensor(self.SCHEDULES[count], dtype=torch.float32),)
+
+
+# Native PDD grid in alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs,
+# models/pdd_config.json. The export is already shifted and stretched.
+QWEN21_PDD_SIGMAS = (
+    1.0, 0.9169867038726807, 0.7861579060554504,
+    0.5494909882545471, 0.0,
+)
+_QWEN21_PDD_INDEX = ContextVar("qwen21_pdd_index", default=None)
+
+
+class _Qwen21PDDHead(torch.nn.Module):
+    """Select one of the four prefused PDD output projections per Euler call."""
+
+    def __init__(self, weights):
+        super().__init__()
+        self.register_buffer("weights", weights)
+
+    def forward(self, hidden_states):
+        index = _QWEN21_PDD_INDEX.get()
+        if index is None:
+            raise RuntimeError("Qwen PDD head called without its inference wrapper")
+        weight = self.weights[index].to(
+            device=hidden_states.device, dtype=hidden_states.dtype
+        )
+        return F.linear(hidden_states, weight)
+
+
+def _qwen21_pdd_wrapper(executor, *args, **kwargs):
+    if len(args) < 2:
+        raise RuntimeError("Qwen PDD requires a positional model timestep")
+    timestep = args[1]
+    sigma = float(timestep.flatten()[0])
+    index = min(range(4), key=lambda n: abs(sigma - QWEN21_PDD_SIGMAS[n]))
+    if abs(sigma - QWEN21_PDD_SIGMAS[index]) > 0.001:
+        raise ValueError(
+            f"Qwen PDD received sigma {sigma:.6f}; use its four-step sigma node"
+        )
+    token = _QWEN21_PDD_INDEX.set(index)
+    try:
+        native_args = list(args)
+        native_args[1] = torch.full_like(timestep, QWEN21_PDD_SIGMAS[index])
+        return executor(*native_args, **kwargs)
+    finally:
+        _QWEN21_PDD_INDEX.reset(token)
+
+
+class H3Qwen21PDDLoader:
+    """Load Alibaba PAI's prefused PDD heads, LoRA and trained norm weights."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "lora_name": (folder_paths.get_filename_list("loras"),),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "apply"
+    CATEGORY = "model/patch/qwen"
+
+    def apply(self, model, lora_name):
+        path = folder_paths.get_full_path("loras", lora_name)
+        if path is None:
+            raise FileNotFoundError(f"Qwen PDD LoRA is missing: {lora_name}")
+        diffusion = model.get_model_object("diffusion_model")
+        if diffusion.__class__.__name__ != "QwenImage21Transformer2DModel":
+            raise ValueError("Alibaba PAI PDD requires the native Qwen Image 2.1 model")
+        state = comfy.utils.load_torch_file(path, safe_load=True)
+        head_weights = state.pop("proj_out.weight", None)
+        original_head = diffusion.proj_out.weight
+        if (
+            head_weights is None or head_weights.ndim != 3
+            or head_weights.shape[0] != 4
+            or tuple(head_weights.shape[1:]) != _logical_weight_shape(original_head)
+        ):
+            raise ValueError("Qwen PDD checkpoint has an incompatible four-head projection")
+
+        model_sd = model.model.state_dict()
+        target_names = {
+            key[:-len(".lora_down")]
+            for key in state if key.endswith(".lora_down")
+        }
+        if len(target_names) != 231:
+            raise ValueError(
+                f"Qwen PDD checkpoint has {len(target_names)} LoRA targets; expected 231"
+            )
+        synthetic = {}
+        key_map = {}
+        used = set()
+        for name in sorted(target_names):
+            down_key, up_key = name + ".lora_down", name + ".lora_up"
+            if up_key not in state:
+                raise ValueError(f"Qwen PDD checkpoint is missing {up_key}")
+            if name.endswith((".img_mlp.gate_layer", ".img_mlp.proj")):
+                continue
+            native = f"diffusion_model.{name}.weight"
+            if native not in model_sd:
+                raise ValueError(f"Qwen PDD target is unavailable: {native}")
+            down, up = state[down_key], state[up_key]
+            if (
+                down.ndim != 2 or up.ndim != 2 or down.shape[0] != 64
+                or up.shape[1] != 64
+                or (up.shape[0], down.shape[1])
+                != _logical_weight_shape(model_sd[native])
+            ):
+                raise ValueError(f"Qwen PDD LoRA shape mismatch: {name}")
+            synthetic[name + ".lora_down.weight"] = down
+            synthetic[name + ".lora_up.weight"] = up
+            key_map[name] = native
+            used.update((down_key, up_key))
+
+        # Native ComfyUI fuses SwiGLU gate and up projections into gate_up.
+        for block in range(32):
+            base = f"transformer_blocks.{block}.img_mlp"
+            gate, proj = base + ".gate_layer", base + ".proj"
+            if gate not in target_names or proj not in target_names:
+                raise ValueError(f"Qwen PDD is missing the MLP pair in block {block}")
+            gate_down, gate_up = state[gate + ".lora_down"], state[gate + ".lora_up"]
+            proj_down, proj_up = state[proj + ".lora_down"], state[proj + ".lora_up"]
+            native = f"diffusion_model.{base}.gate_up.weight"
+            if native not in model_sd:
+                raise ValueError(f"Qwen PDD fused MLP target is unavailable: {native}")
+            up = torch.cat((
+                torch.cat((gate_up, torch.zeros_like(gate_up)), dim=1),
+                torch.cat((torch.zeros_like(proj_up), proj_up), dim=1),
+            ), dim=0)
+            down = torch.cat((gate_down, proj_down), dim=0)
+            if (up.shape[0], down.shape[1]) != _logical_weight_shape(model_sd[native]):
+                raise ValueError(f"Qwen PDD fused MLP shape mismatch in block {block}")
+            synthetic[base + ".gate_up.lora_down.weight"] = down
+            synthetic[base + ".gate_up.lora_up.weight"] = up
+            key_map[base + ".gate_up"] = native
+            used.update((
+                gate + ".lora_down", gate + ".lora_up",
+                proj + ".lora_down", proj + ".lora_up",
+            ))
+
+        patches = comfy.lora.load_lora(synthetic, key_map, log_missing=False)
+        if set(patches) != set(key_map.values()):
+            raise ValueError("Qwen PDD failed to load every LoRA adapter")
+        full_names = {
+            f"transformer_blocks.{block}.attn.norm_{axis}.weight"
+            for block in range(32) for axis in ("q", "k")
+        } | {"txt_in.text_norm.weight"}
+        for name in full_names:
+            native = "diffusion_model." + name
+            if name not in state or native not in model_sd:
+                raise ValueError(f"Qwen PDD full parameter is unavailable: {name}")
+            if state[name].shape != model_sd[native].shape:
+                raise ValueError(f"Qwen PDD full parameter shape mismatch: {name}")
+            patches[native] = ("set", (state[name],))
+            used.add(name)
+        if set(state) != used:
+            raise ValueError(
+                "Qwen PDD checkpoint has unexpected parameters: "
+                + ", ".join(sorted(set(state) - used)[:5])
+            )
+
+        patched = model.clone()
+        applied = set(patched.add_patches(patches))
+        if applied != set(patches):
+            raise ValueError("Qwen PDD could not apply every trained parameter")
+        patched.add_object_patch(
+            "diffusion_model.proj_out", _Qwen21PDDHead(head_weights)
+        )
+        patched.add_wrapper_with_key(
+            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+            "h3_qwen21_pdd_native_time", _qwen21_pdd_wrapper,
+        )
+        return (patched,)
+
+
+class H3Qwen21PDDSigmas:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}}
+
+    RETURN_TYPES = ("SIGMAS",)
+    FUNCTION = "calculate"
+    CATEGORY = "sampling/custom_sampling/schedulers"
+
+    def calculate(self):
+        return (torch.tensor(QWEN21_PDD_SIGMAS, dtype=torch.float32),)
+
+
 NODE_CLASS_MAPPINGS = {
+    "H3Qwen21TurboSigmas": H3Qwen21TurboSigmas,
+    "H3Qwen21PrunaSigmas": H3Qwen21PrunaSigmas,
+    "H3Qwen21PDDLoader": H3Qwen21PDDLoader,
+    "H3Qwen21PDDSigmas": H3Qwen21PDDSigmas,
     "H3SemanticBridge": H3SemanticBridge,
     "H3FirstBlockCache": H3FirstBlockCache,
     "H3LightX2VBypassLoRA": H3LightX2VBypassLoRA,
@@ -1496,10 +1948,15 @@ NODE_CLASS_MAPPINGS = {
     "H3ConditioningCache": H3ConditioningCache,
     "H3StageOffloadPolicy": H3StageOffloadPolicy,
     "H3StageModelOffload": H3StageModelOffload,
+    "H3RefinementCompilerGuard": H3RefinementCompilerGuard,
     "H3SaveVideoNVENC": H3SaveVideoNVENC,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "H3Qwen21TurboSigmas": "Qwen Image 2.1 Viggle Turbo Sigmas",
+    "H3Qwen21PrunaSigmas": "Qwen Image 2.1 Pruna Sigmas",
+    "H3Qwen21PDDLoader": "Qwen Image 2.1 Alibaba PAI PDD Loader",
+    "H3Qwen21PDDSigmas": "Qwen Image 2.1 Alibaba PAI PDD Sigmas",
     "H3SemanticBridge": "MiniMax H3 Semantic Bridge (experimental)",
     "H3FirstBlockCache": "MiniMax H3 FirstBlockCache",
     "H3LightX2VBypassLoRA": "MiniMax H3 LightX2V Bypass LoRA",
@@ -1510,5 +1967,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3ConditioningCache": "MiniMax H3 Conditioning Cache",
     "H3StageOffloadPolicy": "MiniMax H3 Stage Offload Policy",
     "H3StageModelOffload": "MiniMax H3 Stage Model Offload",
+    "H3RefinementCompilerGuard": "MiniMax H3 Refinement Compiler Guard",
     "H3SaveVideoNVENC": "MiniMax H3 Save Video (NVENC)",
 }

@@ -24,12 +24,15 @@ UI = ROOT / "gradio_app.py"
 UI_PACKAGE = ROOT / "h3_ui"
 SHARED_MODELS = ROOT / "h3_models.py"
 SHARED_REQUIREMENTS = ROOT / "h3_requirements.py"
+SHARED_SOURCES = ROOT / "h3_sources.py"
 NODE_PATCHES = ROOT / "h3_node_patches.py"
 ATTENTION_HELPER = ROOT / "h3_attention.py"
 PROMPT_REWRITER = ROOT / "h3_prompt_rewriter.py"
 PROMPT_ENHANCER = ROOT / "prompt.txt"
 PROMPT_MUSIC3 = ROOT / "prompt_music3.txt"
 PROMPT_LTX25 = ROOT / "prompt_ltx25.txt"
+PROMPT_QWEN_IMAGE21 = ROOT / "prompt_qwen_image21.txt"
+PROMPT_YUE2 = ROOT / "prompt_yue2.txt"
 ACCEL_DEST = COMFY / "custom_nodes" / "H3Acceleration" / "__init__.py"
 
 LOCAL_UI = LOCAL / "gradio_app.py"
@@ -37,12 +40,15 @@ LOCAL_UI_PACKAGE = LOCAL / "h3_ui"
 LOCAL_ACCEL = LOCAL / "custom_nodes" / "H3Acceleration" / "__init__.py"
 LOCAL_SHARED_MODELS = LOCAL / "h3_models.py"
 LOCAL_SHARED_REQUIREMENTS = LOCAL / "h3_requirements.py"
+LOCAL_SHARED_SOURCES = LOCAL / "h3_sources.py"
 LOCAL_NODE_PATCHES = LOCAL / "h3_node_patches.py"
 LOCAL_ATTENTION_HELPER = LOCAL / "h3_attention.py"
 LOCAL_PROMPT_REWRITER = LOCAL / "h3_prompt_rewriter.py"
 LOCAL_PROMPT_ENHANCER = LOCAL / "prompt.txt"
 LOCAL_PROMPT_MUSIC3 = LOCAL / "prompt_music3.txt"
 LOCAL_PROMPT_LTX25 = LOCAL / "prompt_ltx25.txt"
+LOCAL_PROMPT_QWEN_IMAGE21 = LOCAL / "prompt_qwen_image21.txt"
+LOCAL_PROMPT_YUE2 = LOCAL / "prompt_yue2.txt"
 
 DATA = PurePosixPath("/data")
 MODELS = DATA / "models"
@@ -55,29 +61,6 @@ MANIFEST = DATA / "h3_model_manifest.json"
 COMFY_PORT = 8188
 UI_PORT = 7860
 
-COMFY_REPO = "https://github.com/Comfy-Org/ComfyUI.git"
-SOL_REPO = "https://github.com/Saganaki22/ComfyUI-sol-attn.git"
-SOL_REF = "930a4d6e432ff8b8ed5e30ff2f72519b92d69bdf"  # v0.6.2, SM86 support
-SLA_REPO = "https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes.git"
-SLA_REF = "aaec055cd642b3292df18e69824c012d345ebfe8"  # v1.4.4
-SPECTRUM_REPO = "https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3.git"
-SPECTRUM_REF = "beb32dd210ef9e95520453107f158241d4f2ecf3"
-LARRY_TURBO_REPO = "https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo.git"
-LARRY_TURBO_REF = "4274783a23afcfdbea3b4876cb79effd6c510785"  # v1.2.3+ audio/reference fixes
-H3_LATENT_UPSCALER_NODE_REPO = (
-    "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git"
-)
-H3_LATENT_UPSCALER_NODE_REF = "d7c01b9011f2e8439493f6c02c29995a27df276f"
-LTXVIDEO_REPO = "https://github.com/Lightricks/ComfyUI-LTXVideo.git"
-LTXVIDEO_REF = "15d09abb5a187a8dcaea2fc31fe51ee96e6c9d0d"
-KJNODES_REPO = "https://github.com/kijai/ComfyUI-KJNodes.git"
-KJNODES_REF = "e8e88f7c88e3f6205b122f5de87e69a09fbce5ac"
-CONTROLNET_AUX_REPO = "https://github.com/Fannovel16/comfyui_controlnet_aux.git"
-CONTROLNET_AUX_REF = "59b1fc411ede8623b2997855b8018f0b3b6cf49f"
-VIDEO_DEPTH_REPO = "https://github.com/yuvraj108c/ComfyUI-Video-Depth-Anything.git"
-VIDEO_DEPTH_REF = "a0db08e63d1ea571601c45cde4aaee0acdd0544d"
-SAGE_WHEEL_URL = "https://huggingface.co/JahJedi/sageattention-flashattn-blackwell-cu130-torch211-cp312/resolve/main/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl"
-SAGE_WHEEL_NAME = "sageattention-2.2.0-cp312-cp312-linux_x86_64.whl"
 APP = os.getenv("H3_MODAL_APP_NAME", "minimax-h3")
 VOL = os.getenv("H3_MODAL_VOLUME", "minimax-h3-data")
 GPU = "RTX-PRO-6000"
@@ -96,14 +79,43 @@ def _shared_import_path() -> Path:
 sys.path.insert(0, str(_shared_import_path()))
 # Only build inputs may be imported while Modal constructs the image. Helpers
 # mounted after run_function() must be imported lazily inside runtime functions.
+from h3_sources import (  # noqa: E402
+    COMFY_REPO,
+    CONTROLNET_AUX_REF,
+    CONTROLNET_AUX_REPO,
+    H3_LATENT_UPSCALER_NODE_REF,
+    H3_LATENT_UPSCALER_NODE_REPO,
+    KJNODES_REF,
+    KJNODES_REPO,
+    LARRY_TURBO_REF,
+    LARRY_TURBO_REPO,
+    LTXVIDEO_REF,
+    LTXVIDEO_REPO,
+    SAGE_WHEEL_NAME,
+    SAGE_WHEEL_URL,
+    SLA_REF,
+    SLA_REPO,
+    SOL_REF,
+    SOL_REPO,
+    SPECTRUM_REF,
+    SPECTRUM_REPO,
+    SPECTRUM_QWEN_REF,
+    SPECTRUM_QWEN_REPO,
+    VIDEO_DEPTH_REF,
+    VIDEO_DEPTH_REPO,
+)
 from h3_requirements import (  # noqa: E402
     H3_AUDIO_T8_REPO,
     H3_AUDIO_T8_REF,
-    ABI_CONSTRAINTS,
     COMFY_FRONTEND_VERSION,
     COMFY_REF,
+    GRADIO_VERSION,
+    HUGGINGFACE_HUB_REQUIREMENT,
+    INSTALL_CONSTRAINTS,
     KERNELS_VERSION,
     KORNIA_VERSION,
+    KORNIA_RS_VERSION,
+    LTX_HDR_REQUIREMENTS,
     NUMPY_VERSION,
     SCIPY_VERSION,
     TORCH_INDEX,
@@ -124,11 +136,13 @@ from h3_node_patches import (  # noqa: E402
     TRT_VAE_NODE_REF,
     TRT_VAE_NODE_REPO,
     patch_larry_turbo_node,
+    patch_qwen_spectrum_node,
     patch_trt_vae_node,
 )
 
 _BUILD_LOCAL_MOUNTS = (
     (LOCAL_SHARED_REQUIREMENTS, SHARED_REQUIREMENTS),
+    (LOCAL_SHARED_SOURCES, SHARED_SOURCES),
     (LOCAL_NODE_PATCHES, NODE_PATCHES),
 )
 _RUNTIME_LOCAL_MOUNTS = (
@@ -140,14 +154,17 @@ _RUNTIME_LOCAL_MOUNTS = (
     (LOCAL_PROMPT_ENHANCER, PROMPT_ENHANCER),
     (LOCAL_PROMPT_MUSIC3, PROMPT_MUSIC3),
     (LOCAL_PROMPT_LTX25, PROMPT_LTX25),
+    (LOCAL_PROMPT_QWEN_IMAGE21, PROMPT_QWEN_IMAGE21),
+    (LOCAL_PROMPT_YUE2, PROMPT_YUE2),
 )
 _BUILD_LOCAL_FILES = tuple(local for local, _ in _BUILD_LOCAL_MOUNTS)
 _RUNTIME_LOCAL_FILES = tuple(local for local, _ in _RUNTIME_LOCAL_MOUNTS)
 _REQUIRED_LOCAL_FILES = _BUILD_LOCAL_FILES + _RUNTIME_LOCAL_FILES
 if IS_LOCAL:
     missing = [str(path) for path in _REQUIRED_LOCAL_FILES if not path.is_file()]
-    if not LOCAL_UI_PACKAGE.is_dir():
-        missing.append(str(LOCAL_UI_PACKAGE))
+    for package in (LOCAL_UI_PACKAGE, LOCAL / "h3_app"):
+        if not package.is_dir():
+            missing.append(str(package))
     if missing:
         raise RuntimeError(
             "Keep these files beside modal_h3.py: " + ", ".join(missing)
@@ -241,6 +258,13 @@ def build(revision: str) -> None:
     _clone(SPECTRUM_REPO, spectrum_dir, ref=SPECTRUM_REF)
     _print_git_revision(spectrum_dir)
 
+    spectrum_qwen_dir = (
+        Path(COMFY) / "custom_nodes" / "ComfyUI-Spectrum-Qwen-Proper"
+    )
+    _clone(SPECTRUM_QWEN_REPO, spectrum_qwen_dir, ref=SPECTRUM_QWEN_REF)
+    patch_qwen_spectrum_node(spectrum_qwen_dir)
+    _print_git_revision(spectrum_qwen_dir)
+
     trt_vae_dir = Path(COMFY) / "custom_nodes" / "ComfyUI-H3VAE_TRT"
     _clone(TRT_VAE_NODE_REPO, trt_vae_dir, ref=TRT_VAE_NODE_REF)
     patch_trt_vae_node(trt_vae_dir)
@@ -301,9 +325,9 @@ def build(revision: str) -> None:
         "\n".join(filtered_lines) + "\n",
         encoding="utf-8",
     )
-    abi_constraints = Path("/tmp/h3-abi-constraints.txt")
-    abi_constraints.write_text(
-        "\n".join(ABI_CONSTRAINTS) + "\n",
+    install_constraints = Path("/tmp/h3-install-constraints.txt")
+    install_constraints.write_text(
+        "\n".join(INSTALL_CONSTRAINTS) + "\n",
         encoding="utf-8",
     )
     _run(
@@ -313,7 +337,7 @@ def build(revision: str) -> None:
         "--system",
         "--upgrade",
         "--constraint",
-        abi_constraints,
+        install_constraints,
         "-r",
         filtered_requirements,
     )
@@ -366,8 +390,8 @@ def build(revision: str) -> None:
         "install",
         "--system",
         "--upgrade",
-        "gradio>=5,<7",
-        "huggingface_hub>=0.34",
+        f"gradio=={GRADIO_VERSION}",
+        HUGGINGFACE_HUB_REQUIREMENT,
         "transformers>=4.57.1",
         "diffusers>=0.36,<0.37",
         f"kernels=={KERNELS_VERSION}",
@@ -375,11 +399,12 @@ def build(revision: str) -> None:
         "peft>=0.18",
         "safetensors>=0.7",
         "einops>=0.8.2",
+        "onnx>=1.19,<2",  # TensorRT compiler graph-based quantization detection
         "decord==0.6.0",
         "imageio>=2.37.2",
         "imageio-ffmpeg>=0.6",
         "requests>=2.32",
-        "openai>=1.109,<3",
+        "openai>=3.16.2,<4",
         "websocket-client>=1.8",
         "aiohttp>=3.11,<4",
         "httpx>=0.27",
@@ -391,7 +416,7 @@ def build(revision: str) -> None:
         TENSORRT_PACKAGE,
         "setuptools<82",
         "--constraint",
-        abi_constraints,
+        install_constraints,
     )
 
     import torch as _torch
@@ -453,44 +478,49 @@ def build(revision: str) -> None:
     for requirements in custom_requirements:
         if not requirements.is_file():
             continue
-        if requirements.parent.name == "comfyui_controlnet_aux":
-            filtered, skipped = filter_pinned_requirements(
-                requirements.read_text(encoding="utf-8").splitlines()
-            )
-            for package, requirement in skipped:
-                print(
-                    f"[modal-h3] Keeping pinned {package}; skipping "
-                    f"ControlNet Aux entry: {requirement}",
-                    flush=True,
-                )
-            filtered_controlnet = Path(
-                "/tmp/controlnet-aux-requirements-constrained.txt"
-            )
-            filtered_controlnet.write_text(
-                "\n".join(filtered) + "\n",
-                encoding="utf-8",
-            )
-            _run(
-                "uv", "pip", "install", "--system", "--upgrade",
-                "--constraint", abi_constraints,
-                "-r", filtered_controlnet,
-            )
-            continue
-        _run(
-            "uv",
-            "pip",
-            "install",
-            "--system",
-            "--no-deps",
-            "-r",
-            requirements,
+        filtered, skipped = filter_pinned_requirements(
+            requirements.read_text(encoding="utf-8").splitlines()
         )
-    # The pinned ComfyUI-LTXVideo revision imports a compatibility symbol that
-    # Kornia removed in 0.8.2. Its requirement is unbounded, so restore the
-    # known-compatible version after all custom-node requirements are applied.
+        for package, requirement in skipped:
+            print(
+                f"[modal-h3] Keeping pinned {package}; skipping "
+                f"{requirements.parent.name} entry: {requirement}",
+                flush=True,
+            )
+        filtered_path = requirements.with_name(".h3-filtered-requirements.txt")
+        filtered_path.write_text(
+            "\n".join(filtered) + "\n", encoding="utf-8"
+        )
+        try:
+            if requirements.parent.name == "comfyui_controlnet_aux":
+                _run(
+                    "uv", "pip", "install", "--system", "--upgrade",
+                    "--constraint", install_constraints,
+                    "-r", filtered_path,
+                )
+            else:
+                _run(
+                    "uv",
+                    "pip",
+                    "install",
+                    "--system",
+                    "--no-deps",
+                    "--constraint",
+                    install_constraints,
+                    "-r",
+                    filtered_path,
+                    *(LTX_HDR_REQUIREMENTS if requirements.parent.name == "ComfyUI-LTXVideo" else ()),
+                )
+        finally:
+            filtered_path.unlink(missing_ok=True)
     _run(
         "uv", "pip", "install", "--system", "--upgrade", "--no-deps",
-        f"kornia=={KORNIA_VERSION}",
+        HUGGINGFACE_HUB_REQUIREMENT,
+    )
+    # Restore the Kornia version checked with the pinned LTXVideo source.
+    _run(
+        "uv", "pip", "install", "--system", "--upgrade", "--no-deps",
+        f"kornia=={KORNIA_VERSION}", f"kornia-rs=={KORNIA_RS_VERSION}",
     )
     kornia_import = subprocess.run(
         [
@@ -498,7 +528,7 @@ def build(revision: str) -> None:
             "-c",
             (
                 "import kornia; "
-                "from kornia.geometry.transform.pyramid import pad; "
+                "from kornia.geometry.transform.pyramid import build_pyramid; "
                 "print(kornia.__version__)"
             ),
         ],
@@ -861,6 +891,8 @@ def serve():
         "127.0.0.1",
         "--port",
         str(COMFY_PORT),
+        "--fast",
+        "fp16_accumulation",
         "--use-ck-attention",
     ]
     print("[modal-h3] Dense/fallback attention: Comfy Kitchen", flush=True)

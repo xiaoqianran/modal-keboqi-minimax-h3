@@ -19,8 +19,10 @@ from .studio_api import build_studio_api
 class AppViews:
     tabs: gr.Tabs
     generation: gr.Row
+    qwen_image21: gr.Group
     ltx25: gr.Group
     music3: gr.Group
+    yue2: gr.Group
     gallery: gr.Group
     api: gr.Group
     gallery_tab: gr.Tab
@@ -35,15 +37,31 @@ def create_app_views() -> AppViews:
             generation = gr.Row(elem_classes=["h3-generator-shell"])
         with gr.Tab("Batch Studio"):
             build_batch_view()
-        with gr.Tab("Gallery") as gallery_tab:
-            gallery = gr.Group(elem_classes=["h3-gallery-shell"])
+        with gr.Tab("Qwen Image 2.1"):
+            qwen_image21 = gr.Group()
         with gr.Tab("LTX 2.5"):
             ltx25 = gr.Group()
         with gr.Tab("MiniMax Music 3"):
             music3 = gr.Group()
+        with gr.Tab("YuE2"):
+            yue2 = gr.Group()
+        with gr.Tab("Gallery") as gallery_tab:
+            gallery = gr.Group(elem_classes=["h3-gallery-shell"])
         with gr.Tab("API"):
             api = gr.Group()
 
     # Standalone React Studio endpoints are hidden from the Gradio interface.
     build_studio_api()
-    return AppViews(tabs, generation, ltx25, music3, gallery, api, gallery_tab)
+
+    return AppViews(
+        tabs,
+        generation,
+        qwen_image21,
+        ltx25,
+        music3,
+        yue2,
+        gallery,
+        api,
+        gallery_tab,
+    )
+

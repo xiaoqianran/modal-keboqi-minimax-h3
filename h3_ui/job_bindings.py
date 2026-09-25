@@ -1,11 +1,25 @@
 """Gradio request injection and job lifetime, isolated from generation code."""
 
 from __future__ import annotations
+from collections.abc import Iterator
 import inspect
 import uuid
 import gradio as gr
 from h3_app.jobs import JOBS, CURRENT_JOB
 from h3_app.provenance import RUN_CONTEXT, render_snapshot
+
+GPU_QUEUE = {"concurrency_id": "h3-gpu", "concurrency_limit": 1}
+PROMPT_QUEUE = {"concurrency_id": "h3-prompt", "concurrency_limit": 4}
+
+
+def bind_gpu_action(trigger, callback=None, **options):
+    """Register generation or maintenance with the same GPU queue policy."""
+    return trigger(callback, **options, **GPU_QUEUE)
+
+
+def bind_prompt_action(trigger, callback=None, **options):
+    """Allow remote prompt requests while a GPU job prepares or downloads models."""
+    return trigger(callback, **options, **PROMPT_QUEUE)
 
 
 def owned_generation(callback, family: str, input_names=None, *, metadata_output=False):
@@ -42,7 +56,16 @@ def owned_generation(callback, family: str, input_names=None, *, metadata_output
                                 if "request" in signature.parameters
                                 else {}
                             )
-                            iterator = iter(callback(*values, **kwargs))
+                            result = callback(*values, **kwargs)
+                            # Generation callbacks normally stream an iterator,
+                            # but short GPU actions may return one multi-output
+                            # tuple. Iterating that tuple would incorrectly send
+                            # each component as a separate Gradio response.
+                            iterator = (
+                                result
+                                if isinstance(result, Iterator)
+                                else iter((result,))
+                            )
                         update = next(iterator)
                     except StopIteration:
                         return
@@ -70,25 +93,37 @@ def owned_generation(callback, family: str, input_names=None, *, metadata_output
                     yield update
             finally:
                 if iterator is not None:
-                    iterator.close()
+                    close = getattr(iterator, "close", None)
+                    if close is not None:
+                        close()
 
     # Gradio treats an empty upload as required unless the callback signature
     # also supplies a default. Keep appended voice inputs optional for old clients.
-    optional_defaults = {
-        "fl2va_audio_1": None, "fl2va_audio_2": None, "fl2va_audio_3": None,
-        "preset": None,
-    } if family == "h3" else {}
+    optional_defaults = (
+        {
+            "fl2va_audio_1": None,
+            "fl2va_audio_2": None,
+            "fl2va_audio_3": None,
+            "encoder_small_input": False,
+            "preset": None,
+        }
+        if family == "h3"
+        else {}
+    )
     parameters = [
         inspect.Parameter(
-            name, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            name,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
             default=optional_defaults.get(name, inspect.Parameter.empty),
         )
         for name in names
     ]
     parameters.append(
         inspect.Parameter(
-            "request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=gr.Request,
-            default=None
+            "request",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=gr.Request,
+            default=None,
         )
     )
     run.__signature__ = inspect.Signature(parameters)

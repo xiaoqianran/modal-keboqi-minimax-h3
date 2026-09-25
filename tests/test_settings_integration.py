@@ -16,7 +16,7 @@ class MigrationTests(unittest.TestCase):
     def components(self):
         return {
             "h3.preset": SimpleNamespace(
-                value="Fast", choices=[("Fast", "Fast"), ("Quality", "Quality")]
+                value="Singularity", choices=[("Singularity", "Singularity"), ("Fast", "Fast"), ("Quality", "Quality")]
             ),
             "h3.generation_mode": SimpleNamespace(
                 value="Turbo", choices=[("Turbo", "Turbo"), ("Normal", "Normal")]
@@ -46,7 +46,7 @@ class MigrationTests(unittest.TestCase):
             },
             self.components(),
         )
-        self.assertEqual(values["h3.preset"], "Fast")
+        self.assertEqual(values["h3.preset"], "Singularity")
         self.assertEqual(values["h3.steps"], 4)
         self.assertFalse(values["h3.stage_model_offload"])
 
@@ -88,6 +88,14 @@ class JobBoundaryTests(unittest.TestCase):
         args, *_ = special_args(fn, ["test"], request=request)
         self.assertIs(args[-1], request)
         self.assertEqual(list(fn(*args)), ["test"])
+
+    def test_non_streaming_multi_output_is_returned_as_one_update(self):
+        def generate(prompt):
+            return prompt, "complete"
+
+        fn = owned_generation(generate, "h3-input")
+        updates = list(fn("image.png", gr.Request(session_hash="session")))
+        self.assertEqual(updates, [("image.png", "complete")])
 
     def test_context_is_scoped_to_each_generator_advance(self):
         seen = []

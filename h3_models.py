@@ -5,10 +5,15 @@ This module is intentionally independent of Gradio, ComfyUI, and Modal so the
 local and Modal deployment paths use exactly the same model sources, manifest
 rules, parallel download behavior, and generated h3_models.json schema.
 """
+
 from __future__ import annotations
 
 import json
 import os
+import errno
+import uuid
+from contextlib import contextmanager
+from threading import RLock
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,26 +24,32 @@ from typing import Any, Iterable
 
 MODEL_REPO = "lilcheaty/MiniMax-H3-NVFP4"
 ORIGINAL_MODEL_REPO = "Comfy-Org/MiniMax-H3"
+SINGULARITY_MODEL_REPO = "WarmBloodAban/Minimax-h3_Singularity"
+FASTH3_MODEL_REPO = "FastVideo/FastVideo-FastH3-Comfy"
 TURBO_REPO = "lightx2v/Minimax-h3-Turbo"
+TAOMATE_TURBO_REPO = "CZMartin22/TaoMate-H3-3step-ComfyUI"
 LARRY_TURBO_REPO = "larryvrh/MiniMax-H3-Turbo-Lora"
-EXPERIMENTAL_MODEL_REPO = "Kijai/MiniMax-H3-experimental"
 SINGLE_FRAME_VAE_REPO = "iamkaikai/MiniMax-H3-Single-Frame-VAE-500K"
 TRT_VAE_REPO = "lihaoyun6/MiniMax-H3-VAE-ONNX"
 TEXT_ENCODER_REPO = "Comfy-Org/MiniMax-H3"
 SEEDVR2_REPO = "Comfy-Org/SeedVR2"
 H3_LATENT_UPSCALER_REPO = "LBH-123-AI/Minimax_h3_latent_Upscaler"
 LTX25_REPO = "Lightricks/LTX-2.5"
-LTX25_PIXEL_UPSCALER_REPO = (
-    "Lightricks/LTX-2.5-22b-IC-LoRA-Pixel-Spatial-Upscaler"
-)
+LTX25_PIXEL_UPSCALER_REPO = "Lightricks/LTX-2.5-22b-IC-LoRA-Pixel-Spatial-Upscaler"
+LTX25_CQ_ENHANCER_REPO = "CQdesign/LTX-2.5-CQ-Video-and-Image-Enhancer-LoRAs"
 LTX23_REPO = "Lightricks/LTX-2.3"
 MINIMAX_MUSIC3_REPO = "Comfy-Org/MiniMax-Music-3"
+YUE2_REPO = "Comfy-Org/YuE2"
+QWEN_IMAGE21_REPO = "Comfy-Org/Qwen-Image-2.1"
+QWEN_IMAGE21_VIGGLE_REPO = "Viggle/Qwen-Image-2.1-viggle-turbo"
+QWEN_IMAGE21_PDD_REPO = "alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs"
+QWEN_IMAGE21_PRUNA_REPO = "PrunaAI/Pruna-Qwen-Image-2.1"
 
 HF_METADATA_WORKERS = 2
 HF_DOWNLOAD_WORKERS = 6
 MIN_VALID_MODEL_BYTES = 1024 * 1024
-TRT_VAE_ENGINE_BUILD_ID = "mixed-fp32-normalization-v3"
-TRT_VAE_ENGINE_MARKER = ".h3-trt-vae-quality-v3"
+TRT_VAE_ENGINE_BUILD_ID = "mixed-fp32-normalization-v4"
+TRT_VAE_ENGINE_MARKER = ".h3-trt-vae-quality-v4"
 TRT_VAE_RUNTIME_MODEL_KEYS = (
     "video_vae_trt_decoder",
     "video_vae_trt_decoder_data",
@@ -117,6 +128,24 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "diffusion_models/minimax_h3_ref2va_pruned_bf16.safetensors",
         "Original · BF16",
     ),
+    "singularity_fl2va": ModelSpec(
+        SINGULARITY_MODEL_REPO,
+        "diffusion_models",
+        "Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors",
+        "Singularity · pruned v1.3 INT8",
+    ),
+    "singularity_ref2va": ModelSpec(
+        SINGULARITY_MODEL_REPO,
+        "diffusion_models",
+        "Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors",
+        "Singularity · pruned v1.3 INT8",
+    ),
+    "fasth3_8step_v2": ModelSpec(
+        FASTH3_MODEL_REPO,
+        "diffusion_models",
+        "diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors",
+        "FastH3 8-Step V2 · T2VA-only INT8 ConvRot",
+    ),
     "text_encoder": ModelSpec(
         TEXT_ENCODER_REPO,
         "text_encoders",
@@ -142,10 +171,11 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "FP16 video VAE",
     ),
     "video_vae_int8": ModelSpec(
-        EXPERIMENTAL_MODEL_REPO,
+        ORIGINAL_MODEL_REPO,
         "vae",
-        "minimax_h3_video_vae_int8_convrot.safetensors",
-        "Experimental INT8 ConvRot video VAE",
+        "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "Official INT8 ConvRot video VAE",
+        expected_sha256="52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e",
     ),
     "video_vae_trt_encoder": ModelSpec(
         TRT_VAE_REPO,
@@ -207,11 +237,23 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
         "LightX2V Ref2V Turbo 8-step v1.0 · official 768p ComfyUI BF16",
     ),
+    "taomate_turbo_lora": ModelSpec(
+        TAOMATE_TURBO_REPO,
+        "loras",
+        "TaoMate-H3-3step-ComfyUI.safetensors",
+        "TaoMate-H3 3-step FL2VA · ComfyUI BF16 conversion",
+    ),
     "larry_turbo_lora": ModelSpec(
         LARRY_TURBO_REPO,
         "loras",
         "minimax_h3_turbo_v4_step600_ema.safetensors",
         "Larry v4-600 EMA Turbo · recommended 6-step quality option",
+    ),
+    "seedvr2_3b_fp16": ModelSpec(
+        SEEDVR2_REPO,
+        "diffusion_models",
+        "diffusion_models/seedvr2_3b_fp16.safetensors",
+        "SeedVR2 3B FP16 · lazy native 2x upscale model",
     ),
     "seedvr2_3b_nvfp4": ModelSpec(
         SEEDVR2_REPO,
@@ -225,6 +267,24 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "diffusion_models/seedvr2_3b_int8_convrot.safetensors",
         "SeedVR2 3B INT8 ConvRot · lazy native 2x upscale model",
     ),
+    "seedvr2_7b_fp16": ModelSpec(
+        SEEDVR2_REPO,
+        "diffusion_models",
+        "diffusion_models/seedvr2_7b_fp16.safetensors",
+        "SeedVR2 7B FP16 · lazy native 2x upscale model",
+    ),
+    "seedvr2_7b_int8": ModelSpec(
+        SEEDVR2_REPO,
+        "diffusion_models",
+        "diffusion_models/seedvr2_7b_int8_convrot.safetensors",
+        "SeedVR2 7B INT8 ConvRot · lazy native 2x upscale model",
+    ),
+    "seedvr2_7b_mxfp8": ModelSpec(
+        SEEDVR2_REPO,
+        "diffusion_models",
+        "diffusion_models/seedvr2_7b_mxfp8.safetensors",
+        "SeedVR2 7B MXFP8 · lazy native 2x upscale model",
+    ),
     "seedvr2_7b_nvfp4": ModelSpec(
         SEEDVR2_REPO,
         "diffusion_models",
@@ -237,6 +297,12 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors",
         "SeedVR2 7B Sharp NVFP4 · lazy native 2x upscale model",
     ),
+    "seedvr2_7b_sharp_fp16": ModelSpec(
+        SEEDVR2_REPO,
+        "diffusion_models",
+        "diffusion_models/seedvr2_7b_sharp_fp16.safetensors",
+        "SeedVR2 7B Sharp FP16 · lazy native 2x upscale model",
+    ),
     "seedvr2_vae": ModelSpec(
         SEEDVR2_REPO,
         "vae",
@@ -246,19 +312,19 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     "h3_latent_upscaler_3d_bf16": ModelSpec(
         H3_LATENT_UPSCALER_REPO,
         "latent_upscale_models",
-        "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+        "minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
         "MiniMax H3 native 3D latent upscaler · Balanced BF16",
     ),
     "h3_latent_upscaler_3d_fp16": ModelSpec(
         H3_LATENT_UPSCALER_REPO,
         "latent_upscale_models",
-        "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+        "minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
         "MiniMax H3 native 3D latent upscaler · Fast FP16",
     ),
     "h3_latent_upscaler_3d_fp32": ModelSpec(
         H3_LATENT_UPSCALER_REPO,
         "latent_upscale_models",
-        "minimax_h3_latent_upscaler_3d_fp32.pth",
+        "minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp32.pth",
         "MiniMax H3 native 3D latent upscaler · Quality FP32",
     ),
     "ltx25_distilled": ModelSpec(
@@ -327,6 +393,24 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "ltx-2.5-22b-ic-lora-pixel-spatial-upscaler-x2-1.0.safetensors",
         "LTX-2.5 22B IC-LoRA generative pixel-space 2x video upscaler",
     ),
+    "ltx25_decompression": ModelSpec(
+        "Lightricks/LTX-2.5-22b-IC-LoRA-Decompression",
+        "loras",
+        "ltx-2.5-22b-ic-lora-decompression-0.9.safetensors",
+        "LTX-2.5 IC-LoRA compression artifact removal",
+    ),
+    "ltx25_deblur": ModelSpec(
+        "Lightricks/LTX-2.5-22b-IC-LoRA-Deblur",
+        "loras",
+        "ltx-2.5-22b-ic-lora-deblur-0.9.safetensors",
+        "LTX-2.5 IC-LoRA defocus restoration",
+    ),
+    "ltx25_cq_video_enhancer_v2": ModelSpec(
+        LTX25_CQ_ENHANCER_REPO,
+        "loras",
+        "ltx2.5-CQ-enhancer-lora-V2.safetensors",
+        "LTX-2.5 CQ generative video quality enhancer V2",
+    ),
     "ltx25_iclora_ingredients": ModelSpec(
         "Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients",
         "loras",
@@ -381,30 +465,113 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "vae/minimax_music3_dav.safetensors",
         "MiniMax Music 3 stereo audio decoder",
     ),
+    "yue2_int8": ModelSpec(
+        YUE2_REPO,
+        "checkpoints",
+        "checkpoints/yue2_3b_int8_convrot.safetensors",
+        "YuE2 3B INT8 ConvRot",
+    ),
+    "yue2_bf16": ModelSpec(
+        YUE2_REPO,
+        "checkpoints",
+        "checkpoints/yue2_3b_bf16.safetensors",
+        "YuE2 3B BF16",
+    ),
+    "qwen_image21_dit_int8": ModelSpec(
+        QWEN_IMAGE21_REPO,
+        "diffusion_models",
+        "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+        "Qwen Image 2.1 DiT INT8 ConvRot",
+    ),
+    "qwen_image21_dit_bf16": ModelSpec(
+        QWEN_IMAGE21_REPO,
+        "diffusion_models",
+        "diffusion_models/qwen_image_2.1_bf16.safetensors",
+        "Qwen Image 2.1 DiT BF16",
+    ),
+    "qwen_image21_text_int8": ModelSpec(
+        QWEN_IMAGE21_REPO,
+        "text_encoders",
+        "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+        "Qwen Image 2.1 Qwen3-VL 8B INT8 ConvRot encoder",
+    ),
+    "qwen_image21_text_w4a8": ModelSpec(
+        QWEN_IMAGE21_REPO,
+        "text_encoders",
+        "text_encoders/qwen3vl_8b_w4a8.safetensors",
+        "Qwen Image 2.1 Qwen3-VL 8B W4A8 encoder",
+    ),
+    "qwen_image21_text_bf16": ModelSpec(
+        QWEN_IMAGE21_REPO,
+        "text_encoders",
+        "text_encoders/qwen3vl_8b_bf16.safetensors",
+        "Qwen Image 2.1 Qwen3-VL 8B BF16 encoder",
+    ),
+    "qwen_image21_vae": ModelSpec(
+        QWEN_IMAGE21_REPO,
+        "vae",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+        "Qwen Image 2.1 BF16 VAE",
+    ),
+    "qwen_image21_viggle_v02_lora": ModelSpec(
+        QWEN_IMAGE21_VIGGLE_REPO,
+        "loras",
+        "Qwen-Image-2.1-viggle-turbo-v0.2-5step-lora-r256.safetensors",
+        "Viggle Qwen Image 2.1 Turbo v0.2 LoRA",
+    ),
+    "qwen_image21_pdd_4step_lora": ModelSpec(
+        QWEN_IMAGE21_PDD_REPO,
+        "loras",
+        "models/Qwen-Image-2.1-Fun-Acc-4Step.safetensors",
+        "Alibaba PAI Qwen Image 2.1 PDD 4-step LoRA",
+    ),
+    "qwen_image21_pruna_8step_lora": ModelSpec(
+        QWEN_IMAGE21_PRUNA_REPO,
+        "loras",
+        "p_qwen_image_2.1_8step_v0.1.safetensors",
+        "Pruna Qwen Image 2.1 8-step LoRA",
+    ),
+    "qwen_image21_pruna_5step_lora": ModelSpec(
+        QWEN_IMAGE21_PRUNA_REPO,
+        "loras",
+        "p_qwen_image_2.1_5step_v0.1.safetensors",
+        "Pruna Qwen Image 2.1 5-step LoRA",
+    ),
 }
 
 PROFILE_MODEL_KEYS = {
     "speed": ("speed_fl2va", "speed_ref2va"),
     "quality": ("quality_fl2va", "quality_ref2va"),
     "original": ("original_fl2va", "original_ref2va"),
+    "singularity": ("singularity_fl2va", "singularity_ref2va"),
+    # The pair preserves the existing profile schema while referencing one
+    # physical file. Runtime policy allows only the T2VA route.
+    "fasth3_8step_v2": ("fasth3_8step_v2", "fasth3_8step_v2"),
 }
 PROFILE_LABELS = {
     "speed": "Speed",
     "quality": "Quality",
     "original": "Original",
+    "singularity": "Singularity",
+    "fasth3_8step_v2": "FastH3 8-Step V2",
 }
-PRELOAD_PROFILES = ("speed",)
-PRELOAD_PROFILE_MODEL_KEYS = ("speed_fl2va",)
+PRELOAD_PROFILES = ("singularity",)
+PRELOAD_PROFILE_MODEL_KEYS = ("singularity_fl2va",)
 PROFILE_MODEL_KEY_SET = frozenset(
     key for keys in PROFILE_MODEL_KEYS.values() for key in keys
 )
 SEEDVR2_MODEL_CHOICES = {
-    "3B NVFP4": "seedvr2_3b_nvfp4",
+    "7B FP16": "seedvr2_7b_fp16",
+    "7B INT8": "seedvr2_7b_int8",
+    "3B FP16": "seedvr2_3b_fp16",
     "3B INT8": "seedvr2_3b_int8",
+    "7B Sharp FP16": "seedvr2_7b_sharp_fp16",
+    "7B MXFP8": "seedvr2_7b_mxfp8",
+    "3B NVFP4": "seedvr2_3b_nvfp4",
     "7B NVFP4": "seedvr2_7b_nvfp4",
     "7B Sharp NVFP4": "seedvr2_7b_sharp_nvfp4",
 }
-DEFAULT_SEEDVR2_MODEL = "7B NVFP4"
+DEFAULT_SEEDVR2_MODEL = "7B INT8"
 SEEDVR2_UPSCALE_MODEL_KEYS = (
     *SEEDVR2_MODEL_CHOICES.values(),
     "seedvr2_vae",
@@ -412,6 +579,9 @@ SEEDVR2_UPSCALE_MODEL_KEYS = (
 LAZY_POSTPROCESS_MODEL_KEYS = (
     *SEEDVR2_UPSCALE_MODEL_KEYS,
     "ltx25_pixel_upscaler_x2",
+    "ltx25_decompression",
+    "ltx25_deblur",
+    "ltx25_cq_video_enhancer_v2",
 )
 H3_LATENT_UPSCALER_MODEL_CHOICES = {
     "Balanced (BF16)": "h3_latent_upscaler_3d_bf16",
@@ -425,8 +595,8 @@ H3_TEXT_ENCODER_CHOICES = {
     "INT8 ConvRot": "text_encoder_int8",
     "BF16": "text_encoder_bf16",
 }
-DEFAULT_H3_TEXT_ENCODER = "BF16"
-DEFAULT_H3_TEXT_ENCODER_KEY = "text_encoder_bf16"
+DEFAULT_H3_TEXT_ENCODER = "INT8 ConvRot"
+DEFAULT_H3_TEXT_ENCODER_KEY = "text_encoder_int8"
 H3_OPTIONAL_TEXT_ENCODER_KEYS = (
     "text_encoder",
     "text_encoder_int8",
@@ -468,6 +638,32 @@ MUSIC3_MODEL_CHOICES = {
 DEFAULT_MUSIC3_MODEL = "INT8 ConvRot (lower VRAM)"
 MUSIC3_SHARED_MODEL_KEYS = ("music3_text_encoder", "music3_vae")
 MUSIC3_MODEL_KEYS = (*MUSIC3_MODEL_CHOICES.values(), *MUSIC3_SHARED_MODEL_KEYS)
+YUE2_MODEL_CHOICES = {
+    "INT8 ConvRot (lower VRAM)": "yue2_int8",
+    "BF16": "yue2_bf16",
+}
+DEFAULT_YUE2_MODEL = "INT8 ConvRot (lower VRAM)"
+YUE2_MODEL_KEYS = tuple(YUE2_MODEL_CHOICES.values())
+QWEN_IMAGE21_MODEL_CHOICES = {
+    "INT8 ConvRot (lower VRAM)": "qwen_image21_dit_int8",
+    "BF16": "qwen_image21_dit_bf16",
+}
+DEFAULT_QWEN_IMAGE21_MODEL = "BF16"
+QWEN_IMAGE21_TEXT_ENCODER_CHOICES = {
+    "INT8 ConvRot (recommended)": "qwen_image21_text_int8",
+    "W4A8 (lowest VRAM)": "qwen_image21_text_w4a8",
+    "BF16": "qwen_image21_text_bf16",
+}
+DEFAULT_QWEN_IMAGE21_TEXT_ENCODER = "BF16"
+QWEN_IMAGE21_MODEL_KEYS = (
+    *QWEN_IMAGE21_MODEL_CHOICES.values(),
+    *QWEN_IMAGE21_TEXT_ENCODER_CHOICES.values(),
+    "qwen_image21_vae",
+    "qwen_image21_viggle_v02_lora",
+    "qwen_image21_pdd_4step_lora",
+    "qwen_image21_pruna_8step_lora",
+    "qwen_image21_pruna_5step_lora",
+)
 LAZY_OPTIONAL_MODEL_KEYS = (
     "semantic_bridge_v1",
     *H3_OPTIONAL_TEXT_ENCODER_KEYS,
@@ -476,6 +672,7 @@ LAZY_OPTIONAL_MODEL_KEYS = (
     "video_vae_trt_decoder",
     "video_vae_trt_decoder_data",
     "image_vae_500k",
+    "taomate_turbo_lora",
     "turbo_8step_lora",
     "turbo_8step_ref_lora",
     "larry_turbo_lora",
@@ -485,19 +682,60 @@ LAZY_OPTIONAL_MODEL_KEYS = (
     *LTX25_MODEL_KEYS,
     *LTX25_OFFICIAL_WORKFLOW_MODEL_KEYS,
     *MUSIC3_MODEL_KEYS,
+    *YUE2_MODEL_KEYS,
+    *QWEN_IMAGE21_MODEL_KEYS,
 )
 SHARED_MODEL_KEYS = tuple(
-    key for key in MODEL_SPECS
+    key
+    for key in MODEL_SPECS
     if key not in PROFILE_MODEL_KEY_SET and key not in LAZY_OPTIONAL_MODEL_KEYS
 )
 PRELOAD_MODEL_KEYS = (
     *PRELOAD_PROFILE_MODEL_KEYS,
-    # Keep provisioning aligned with the UI's initial Fast preset.
+    # Keep provisioning aligned with the UI's initial Singularity preset.
     "text_encoder",
     "larry_turbo_lora",
     "h3_latent_upscaler_3d_fp32",
     *SHARED_MODEL_KEYS,
 )
+
+
+_MANIFEST_THREAD_LOCK = RLock()
+
+
+@contextmanager
+def model_manifest_lock(path: Path):
+    """Coordinate installers and UI preparation across threads and processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with _MANIFEST_THREAD_LOCK, lock_path.open("a+b") as handle:
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                        raise
+                    time.sleep(0.1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def read_json(path: Path, default: Any):
@@ -511,12 +749,12 @@ def read_json(path: Path, default: Any):
 
 def write_json_atomic(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".partial")
-    tmp.write_text(
-        json.dumps(value, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
+    tmp = path.with_name(path.name + f".{uuid.uuid4().hex}.partial")
+    try:
+        tmp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def model_manifest_key(spec: ModelSpec) -> str:
@@ -552,8 +790,7 @@ def model_file_matches_manifest(
         and isinstance(recorded_size, int)
         and recorded_size == size
         and (
-            spec.expected_sha256 is None
-            or entry.get("sha256") == spec.expected_sha256
+            spec.expected_sha256 is None or entry.get("sha256") == spec.expected_sha256
         )
     )
 
@@ -607,8 +844,7 @@ def _fetch_repositories(
     workers = max(1, min(metadata_workers, len(repo_ids)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_fetch_repo, repo_id, token): repo_id
-            for repo_id in repo_ids
+            pool.submit(_fetch_repo, repo_id, token): repo_id for repo_id in repo_ids
         }
         for future in as_completed(futures):
             repo_id = futures[future]
@@ -657,9 +893,7 @@ def _plan_model(
     revision, files = repo_result
     sibling = files.get(spec.filename)
     if sibling is None:
-        raise FileNotFoundError(
-            f"{spec.repo_id}/{spec.filename} is not present"
-        )
+        raise FileNotFoundError(f"{spec.repo_id}/{spec.filename} is not present")
 
     lfs = getattr(sibling, "lfs", None)
     sha256 = metadata_value(lfs, "sha256")
@@ -766,6 +1000,7 @@ def _build_config(manifest_name: str) -> dict[str, Any]:
     turbo_ref_lora = MODEL_SPECS["turbo_ref_lora"]
     turbo_8step_lora = MODEL_SPECS["turbo_8step_lora"]
     turbo_8step_ref_lora = MODEL_SPECS["turbo_8step_ref_lora"]
+    taomate_turbo_lora = MODEL_SPECS["taomate_turbo_lora"]
     larry_turbo_lora = MODEL_SPECS["larry_turbo_lora"]
     seedvr2_vae = MODEL_SPECS["seedvr2_vae"]
     seedvr2_models = {
@@ -774,11 +1009,10 @@ def _build_config(manifest_name: str) -> dict[str, Any]:
     }
 
     return {
-        "schema_version": 16,
+        "schema_version": 20,
         "default_profile": "speed",
         "profiles": {
-            profile: _profile_config(profile)
-            for profile in PROFILE_MODEL_KEYS
+            profile: _profile_config(profile) for profile in PROFILE_MODEL_KEYS
         },
         "text_encoder": text.local_name,
         "text_encoders": {
@@ -802,6 +1036,8 @@ def _build_config(manifest_name: str) -> dict[str, Any]:
         "turbo_8step_source": turbo_8step_lora.source,
         "turbo_8step_ref_lora": turbo_8step_ref_lora.local_name,
         "turbo_8step_ref_source": turbo_8step_ref_lora.source,
+        "taomate_turbo_lora": taomate_turbo_lora.local_name,
+        "taomate_turbo_source": taomate_turbo_lora.source,
         "larry_turbo_lora": larry_turbo_lora.local_name,
         "larry_turbo_source": larry_turbo_lora.source,
         # Larry's FL2VA-trained LoRA is also exposed for experimental Ref2VA.
@@ -825,7 +1061,9 @@ def _build_config(manifest_name: str) -> dict[str, Any]:
                 for key in LTX25_SHARED_MODEL_KEYS
             },
         },
-        "turbo_supported_profiles": list(PROFILE_MODEL_KEYS),
+        "turbo_supported_profiles": [
+            profile for profile in PROFILE_MODEL_KEYS if profile != "fasth3_8step_v2"
+        ],
         "turbo_supported_modes": ["fl2va", "ref2va"],
         "manifest": manifest_name,
     }
@@ -842,106 +1080,105 @@ def sync_models(
     model_keys: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Refresh selected model files and return the complete model catalog."""
-    token = resolve_hf_token(token)
-    root = Path(root)
-    manifest_path = Path(manifest_path)
-    manifest = read_json(
-        manifest_path,
-        {"schema_version": 1, "files": {}},
-    )
-    if not isinstance(manifest, dict):
-        manifest = {"schema_version": 1, "files": {}}
-    if not isinstance(manifest.get("files"), dict):
-        manifest["files"] = {}
-
-    selected_keys = tuple(MODEL_SPECS if model_keys is None else model_keys)
-    unknown = sorted(set(selected_keys) - set(MODEL_SPECS))
-    if unknown:
-        raise KeyError("Unknown model keys: " + ", ".join(unknown))
-    selected_specs = {key: MODEL_SPECS[key] for key in selected_keys}
-    repo_ids = sorted({spec.repo_id for spec in selected_specs.values()})
-    repo_results = _fetch_repositories(
-        repo_ids,
-        token,
-        metadata_workers,
-    )
-
-    plans = [
-        _plan_model(
-            root=root,
-            manifest=manifest,
-            repo_results=repo_results,
-            key=key,
-            spec=spec,
-            log_prefix=log_prefix,
+    with model_manifest_lock(Path(manifest_path)):
+        token = resolve_hf_token(token)
+        root = Path(root)
+        manifest_path = Path(manifest_path)
+        manifest = read_json(
+            manifest_path,
+            {"schema_version": 1, "files": {}},
         )
-        for key, spec in selected_specs.items()
-    ]
+        if not isinstance(manifest, dict):
+            manifest = {"schema_version": 1, "files": {}}
+        if not isinstance(manifest.get("files"), dict):
+            manifest["files"] = {}
 
-    stale = [plan for plan in plans if plan["needs_download"]]
-    downloaded_keys: set[str] = set()
-    download_failures: list[tuple[str, Exception]] = []
-    if stale:
-        workers = max(1, min(download_workers, len(stale)))
-        print(
-            f"{log_prefix} downloading {len(stale)} model files "
-            f"with {workers} parallel workers",
-            flush=True,
+        selected_keys = tuple(MODEL_SPECS if model_keys is None else model_keys)
+        unknown = sorted(set(selected_keys) - set(MODEL_SPECS))
+        if unknown:
+            raise KeyError("Unknown model keys: " + ", ".join(unknown))
+        selected_specs = {key: MODEL_SPECS[key] for key in selected_keys}
+        repo_ids = sorted({spec.repo_id for spec in selected_specs.values()})
+        repo_results = _fetch_repositories(
+            repo_ids,
+            token,
+            metadata_workers,
         )
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(_download_model, plan, token, log_prefix): plan
-                for plan in stale
+
+        plans = [
+            _plan_model(
+                root=root,
+                manifest=manifest,
+                repo_results=repo_results,
+                key=key,
+                spec=spec,
+                log_prefix=log_prefix,
+            )
+            for key, spec in selected_specs.items()
+        ]
+
+        stale = [plan for plan in plans if plan["needs_download"]]
+        downloaded_keys: set[str] = set()
+        download_failures: list[tuple[str, Exception]] = []
+        if stale:
+            workers = max(1, min(download_workers, len(stale)))
+            print(
+                f"{log_prefix} downloading {len(stale)} model files "
+                f"with {workers} parallel workers",
+                flush=True,
+            )
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(_download_model, plan, token, log_prefix): plan
+                    for plan in stale
+                }
+                for future in as_completed(futures):
+                    plan = futures[future]
+                    try:
+                        downloaded_keys.add(future.result())
+                    except Exception as exc:
+                        download_failures.append((plan["key"], exc))
+
+        files_manifest = manifest.setdefault("files", {})
+        for plan in plans:
+            if not plan["remote_ok"]:
+                continue
+            # Record successful workers even when a sibling worker failed. This
+            # prevents a completed multi-gigabyte file from being downloaded again
+            # merely because the parallel batch could not finish every model.
+            if plan["needs_download"] and plan["key"] not in downloaded_keys:
+                continue
+            spec: ModelSpec = plan["spec"]
+            dest: Path = plan["dest"]
+            files_manifest[plan["manifest_key"]] = {
+                "repo_id": spec.repo_id,
+                "filename": spec.filename,
+                "local_path": plan["manifest_key"],
+                "source": spec.source,
+                "repo_revision": plan["revision"],
+                "blob_id": plan["blob_id"],
+                "sha256": plan["sha256"],
+                "size": (
+                    plan["size"] if plan["size"] is not None else dest.stat().st_size
+                ),
+                "remote_identity": plan["identity"],
             }
-            for future in as_completed(futures):
-                plan = futures[future]
-                try:
-                    downloaded_keys.add(future.result())
-                except Exception as exc:
-                    download_failures.append((plan["key"], exc))
 
-    files_manifest = manifest.setdefault("files", {})
-    for plan in plans:
-        if not plan["remote_ok"]:
-            continue
-        # Record successful workers even when a sibling worker failed. This
-        # prevents a completed multi-gigabyte file from being downloaded again
-        # merely because the parallel batch could not finish every model.
-        if plan["needs_download"] and plan["key"] not in downloaded_keys:
-            continue
-        spec: ModelSpec = plan["spec"]
-        dest: Path = plan["dest"]
-        files_manifest[plan["manifest_key"]] = {
-            "repo_id": spec.repo_id,
-            "filename": spec.filename,
-            "local_path": plan["manifest_key"],
-            "source": spec.source,
-            "repo_revision": plan["revision"],
-            "blob_id": plan["blob_id"],
-            "sha256": plan["sha256"],
-            "size": (
-                plan["size"]
-                if plan["size"] is not None
-                else dest.stat().st_size
-            ),
-            "remote_identity": plan["identity"],
-        }
+        manifest["schema_version"] = 1
+        manifest["repo_id"] = MODEL_REPO
+        manifest["checked_at_unix"] = int(time.time())
+        write_json_atomic(manifest_path, manifest)
 
-    manifest["schema_version"] = 1
-    manifest["repo_id"] = MODEL_REPO
-    manifest["checked_at_unix"] = int(time.time())
-    write_json_atomic(manifest_path, manifest)
+        if download_failures:
+            details = "; ".join(
+                f"{key} ({MODEL_SPECS[key].repo_id}): {exc}"
+                for key, exc in download_failures
+            )
+            raise RuntimeError(
+                f"{len(download_failures)} model download(s) failed: {details}"
+            ) from download_failures[0][1]
 
-    if download_failures:
-        details = "; ".join(
-            f"{key} ({MODEL_SPECS[key].repo_id}): {exc}"
-            for key, exc in download_failures
-        )
-        raise RuntimeError(
-            f"{len(download_failures)} model download(s) failed: {details}"
-        ) from download_failures[0][1]
-
-    return _build_config(manifest_path.name)
+        return _build_config(manifest_path.name)
 
 
 def validate_config_files(
@@ -952,10 +1189,10 @@ def validate_config_files(
     """Return missing/invalid files from the startup preload inventory.
 
     ``h3_models.json`` keeps ``text_encoder`` as a legacy compatibility field
-    pointing at the BF16 encoder. That checkpoint is intentionally lazy: the
-    default Fast UI preset uses the preloaded NVFP4/AWQ encoder instead. Do not
-    validate every file named in the complete catalog here, or Modal will fail
-    startup before the on-demand downloader can run.
+    pointing at the INT8 ConvRot encoder. That checkpoint is intentionally lazy:
+    the default Singularity UI preset uses the preloaded NVFP4/AWQ encoder
+    instead. Do not validate every file named in the complete catalog here, or
+    Modal will fail startup before the on-demand downloader can run.
     """
     root = Path(root)
     # ``config`` and ``profiles`` remain accepted for API compatibility with
@@ -997,12 +1234,16 @@ def selftest() -> None:
         "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
     )
     assert set(MODEL_SPECS) == {
+        "semantic_bridge_v1",
         "speed_fl2va",
         "speed_ref2va",
         "quality_fl2va",
         "quality_ref2va",
         "original_fl2va",
         "original_ref2va",
+        "singularity_fl2va",
+        "singularity_ref2va",
+        "fasth3_8step_v2",
         "text_encoder",
         "text_encoder_int8",
         "text_encoder_bf16",
@@ -1017,10 +1258,16 @@ def selftest() -> None:
         "turbo_ref_lora",
         "turbo_8step_lora",
         "turbo_8step_ref_lora",
+        "taomate_turbo_lora",
         "larry_turbo_lora",
+        "seedvr2_3b_fp16",
         "seedvr2_3b_nvfp4",
         "seedvr2_3b_int8",
+        "seedvr2_7b_fp16",
+        "seedvr2_7b_int8",
+        "seedvr2_7b_mxfp8",
         "seedvr2_7b_nvfp4",
+        "seedvr2_7b_sharp_fp16",
         "seedvr2_7b_sharp_nvfp4",
         "seedvr2_vae",
         "h3_latent_upscaler_3d_bf16",
@@ -1037,6 +1284,9 @@ def selftest() -> None:
         "ltx25_spatial_upscaler",
         "ltx25_temporal_upscaler",
         "ltx25_pixel_upscaler_x2",
+        "ltx25_decompression",
+        "ltx25_deblur",
+        "ltx25_cq_video_enhancer_v2",
         "ltx25_iclora_ingredients",
         "ltx25_iclora_in_outpaint",
         "ltx25_iclora_motion_track",
@@ -1046,26 +1296,44 @@ def selftest() -> None:
         "music3_dit_fp16",
         "music3_text_encoder",
         "music3_vae",
+        "yue2_int8",
+        "yue2_bf16",
+        "qwen_image21_dit_int8",
+        "qwen_image21_dit_bf16",
+        "qwen_image21_text_int8",
+        "qwen_image21_text_w4a8",
+        "qwen_image21_text_bf16",
+        "qwen_image21_vae",
+        "qwen_image21_viggle_v02_lora",
+        "qwen_image21_pdd_4step_lora",
+        "qwen_image21_pruna_8step_lora",
+        "qwen_image21_pruna_5step_lora",
     }
 
     cfg = _build_config("manifest.json")
     missing = validate_config_files(Path(tempfile.mkdtemp()), cfg)
-    assert "diffusion_models/" + cfg["profiles"]["speed"]["fl2va"] in missing
+    assert "diffusion_models/" + cfg["profiles"]["singularity"]["fl2va"] in missing
+    assert "speed_fl2va" not in PRELOAD_MODEL_KEYS
     assert "text_encoders/" + MODEL_SPECS["text_encoder"].local_name in missing
-    assert (
-        "text_encoders/" + MODEL_SPECS["text_encoder_bf16"].local_name not in missing
-    )
+    assert "text_encoders/" + MODEL_SPECS["text_encoder_bf16"].local_name not in missing
     assert "diffusion_models/" + cfg["profiles"]["speed"]["ref2va"] not in missing
     assert set(PRELOAD_MODEL_KEYS).isdisjoint(PROFILE_MODEL_KEYS["original"])
-    assert "speed_fl2va" in PRELOAD_MODEL_KEYS
-    assert PRELOAD_PROFILE_MODEL_KEYS == ("speed_fl2va",)
-    assert "speed_fl2va" in PRELOAD_MODEL_KEYS
+    assert "singularity_fl2va" in PRELOAD_MODEL_KEYS
+    assert PRELOAD_PROFILE_MODEL_KEYS == ("singularity_fl2va",)
+    assert (
+        MODEL_SPECS["singularity_fl2va"].local_name
+        == MODEL_SPECS["singularity_ref2va"].local_name
+    )
     assert "speed_ref2va" not in PRELOAD_MODEL_KEYS
     assert set(SEEDVR2_UPSCALE_MODEL_KEYS).isdisjoint(PRELOAD_MODEL_KEYS)
     assert "h3_latent_upscaler_3d_fp32" in PRELOAD_MODEL_KEYS
     assert "h3_latent_upscaler_3d_bf16" not in PRELOAD_MODEL_KEYS
     assert tuple(cfg["profiles"]) == tuple(PROFILE_MODEL_KEYS)
-    assert cfg["schema_version"] == 16
+    assert cfg["schema_version"] == 20
+    assert "fasth3_8step_v2" not in PRELOAD_MODEL_KEYS
+    assert cfg["profiles"]["fasth3_8step_v2"]["fl2va"] == (
+        MODEL_SPECS["fasth3_8step_v2"].local_name
+    )
     assert cfg["default_profile"] == "speed"
     assert cfg["profiles"]["quality"]["fl2va"] == (
         "minimax_h3_fl2va_pruned_nvfp4_convrot_int8.safetensors"
@@ -1074,7 +1342,7 @@ def selftest() -> None:
         "minimax_h3_fl2va_pruned_bf16.safetensors"
     )
     assert cfg["text_encoder"] == (
-        "qwen3vl_32b_minimax_h3_bf16.safetensors"
+        "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
     )
     assert cfg["text_encoders"] == {
         "NVFP4 / AWQ": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
@@ -1085,25 +1353,32 @@ def selftest() -> None:
         PRELOAD_MODEL_KEYS
     )
     assert "text_encoder" in PRELOAD_MODEL_KEYS
-    assert cfg["video_vae_int8"] == (
-        "minimax_h3_video_vae_int8_convrot.safetensors"
+    assert cfg["video_vae_int8"] == ("minimax_h3_video_vae_int8_convrot.safetensors")
+    assert MODEL_SPECS["video_vae_int8"].repo_id == ORIGINAL_MODEL_REPO
+    assert MODEL_SPECS["video_vae_int8"].filename == (
+        "vae/minimax_h3_video_vae_int8_convrot.safetensors"
+    )
+    assert MODEL_SPECS["video_vae_int8"].expected_sha256 == (
+        "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e"
     )
     assert "video_vae_int8" not in PRELOAD_MODEL_KEYS
-    assert cfg["image_vae_500k"] == (
-        "minimax_h3_single_frame_decoder_500k.safetensors"
-    )
+    assert cfg["image_vae_500k"] == ("minimax_h3_single_frame_decoder_500k.safetensors")
     assert "image_vae_500k" not in PRELOAD_MODEL_KEYS
-    assert cfg["turbo_lora"] == "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors"
+    assert (
+        cfg["turbo_lora"]
+        == "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors"
+    )
     assert cfg["turbo_ref_lora"] == (
         "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
     )
-    assert cfg["turbo_8step_lora"] == "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+    assert (
+        cfg["turbo_8step_lora"]
+        == "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+    )
     assert cfg["turbo_8step_ref_lora"] == (
         "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
     )
-    assert {"turbo_lora", "turbo_ref_lora"}.issubset(
-        PRELOAD_MODEL_KEYS
-    )
+    assert {"turbo_lora", "turbo_ref_lora"}.issubset(PRELOAD_MODEL_KEYS)
     assert "turbo_8step_lora" not in PRELOAD_MODEL_KEYS
     assert "turbo_8step_ref_lora" not in PRELOAD_MODEL_KEYS
     assert cfg["larry_turbo_lora"] == "minimax_h3_turbo_v4_step600_ema.safetensors"
@@ -1113,21 +1388,26 @@ def selftest() -> None:
     assert h3_upscaler.repo_id == H3_LATENT_UPSCALER_REPO
     assert h3_upscaler.folder == "latent_upscale_models"
     assert h3_upscaler.local_name == (
-        "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+        "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"
     )
     assert DEFAULT_H3_LATENT_UPSCALER_MODEL == "Quality (FP32)"
     assert {
         label: MODEL_SPECS[key].local_name
         for label, key in H3_LATENT_UPSCALER_MODEL_CHOICES.items()
     } == {
-        "Balanced (BF16)": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
-        "Fast (FP16)": "minimax_h3_latent_upscaler_3d_fp16.safetensors",
-        "Quality (FP32)": "minimax_h3_latent_upscaler_3d_fp32.pth",
+        "Balanced (BF16)": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+        "Fast (FP16)": "minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
+        "Quality (FP32)": "minimax_h3_latent_upscaler_3d_conv_v1_fp32.pth",
     }
-    assert cfg["seedvr2_dit"] == "seedvr2_7b_nvfp4.safetensors"
+    assert cfg["seedvr2_dit"] == "seedvr2_7b_int8_convrot.safetensors"
     assert cfg["seedvr2_models"] == {
-        "3B NVFP4": "seedvr2_3b_nvfp4.safetensors",
+        "7B FP16": "seedvr2_7b_fp16.safetensors",
+        "7B INT8": "seedvr2_7b_int8_convrot.safetensors",
+        "3B FP16": "seedvr2_3b_fp16.safetensors",
         "3B INT8": "seedvr2_3b_int8_convrot.safetensors",
+        "7B Sharp FP16": "seedvr2_7b_sharp_fp16.safetensors",
+        "7B MXFP8": "seedvr2_7b_mxfp8.safetensors",
+        "3B NVFP4": "seedvr2_3b_nvfp4.safetensors",
         "7B NVFP4": "seedvr2_7b_nvfp4.safetensors",
         "7B Sharp NVFP4": "seedvr2_7b_sharp_nvfp4.safetensors",
     }
@@ -1144,9 +1424,7 @@ def selftest() -> None:
         "audio_vae": "ltx-2.5-audio-vae-bf16.safetensors",
     }
     assert DEFAULT_LTX25_MODEL == "INT8 ConvRot"
-    assert MODEL_SPECS["ltx25_pixel_upscaler_x2"].repo_id == (
-        LTX25_PIXEL_UPSCALER_REPO
-    )
+    assert MODEL_SPECS["ltx25_pixel_upscaler_x2"].repo_id == (LTX25_PIXEL_UPSCALER_REPO)
     with tempfile.TemporaryDirectory() as model_temp:
         root = Path(model_temp)
         int8 = MODEL_SPECS["ltx25_distilled_int8"]
@@ -1170,13 +1448,18 @@ def selftest() -> None:
         assert not model_file_matches_manifest(root, manifest, int8)
     assert set(LTX25_MODEL_KEYS).isdisjoint(PRELOAD_MODEL_KEYS)
     assert set(MUSIC3_MODEL_KEYS).isdisjoint(PRELOAD_MODEL_KEYS)
+    assert set(YUE2_MODEL_KEYS).isdisjoint(PRELOAD_MODEL_KEYS)
+    assert DEFAULT_YUE2_MODEL == "INT8 ConvRot (lower VRAM)"
     assert DEFAULT_MUSIC3_MODEL == "INT8 ConvRot (lower VRAM)"
     assert len(LTX25_ICLORA_MODEL_KEYS) == 5
     assert all(MODEL_SPECS[key].folder == "loras" for key in LTX25_ICLORA_MODEL_KEYS)
-    assert set(LTX25_OFFICIAL_WORKFLOW_MODEL_KEYS).isdisjoint(
-        PRELOAD_MODEL_KEYS
-    )
-    assert cfg["turbo_supported_profiles"] == ["speed", "quality", "original"]
+    assert set(LTX25_OFFICIAL_WORKFLOW_MODEL_KEYS).isdisjoint(PRELOAD_MODEL_KEYS)
+    assert cfg["turbo_supported_profiles"] == [
+        "speed",
+        "quality",
+        "original",
+        "singularity",
+    ]
     assert cfg["turbo_supported_modes"] == ["fl2va", "ref2va"]
     print("h3_models selftest OK")
 

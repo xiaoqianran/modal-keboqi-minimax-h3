@@ -12,39 +12,42 @@ bundled FirstBlockCache node.
 - Image results expose 1–20 decoded frames in a preview gallery and save only
   the frames selected by the user
 - Audio results decode the native H3 stereo soundtrack without creating a video
+- A dedicated Qwen Image 2.1 tab for native text-to-image generation and
+  multi-reference image editing
 - A dedicated LTX-2.5 text/image-to-video tab with synchronized audio
 - A dedicated MiniMax Music 3 tab for caption-and-lyrics song generation
+- A dedicated YuE2 tab for score-planned or direct lyrics-to-song generation
 - All ten official LTX-2.5 ComfyUI workflows for two-stage generation,
   audio-to-video, text-to-audio, video editing, reference sheets, motion tracks,
   in/outpainting, and pose/depth/canny control
 - LTX-2.5 image-to-video uses a visual start-image input plus optional custom
   middle/end keyframes
 - Live queue position, workflow stage, node count, overall work, and sampling schedule
-- Resolution-aware thumbnail gallery that loads a video only after it is selected
+- Switchable video/image/audio gallery with thumbnails and lazy previews
 - Speed and quality NVFP4 profiles plus the official Original BF16 profile
 - Selectable official Qwen3-VL 32B NVFP4/AWQ, INT8 ConvRot, and BF16 text encoders
 - Optional model offload at every H3 stage boundary, automatically required for BF16
 - Default-on reuse of unchanged prompt and image/audio/video conditioning through
   content-addressed ComfyUI input staging
-- Per-video SeedVR2 or LTX-2.5 IC-LoRA 2x upscale and frame interpolation
+- Per-video SeedVR2 or LTX-2.5 IC-LoRA 2x upscale, LTX-2.5 decompression/deblur, and frame interpolation
 - Selectable SeedVR2 target-frame preprocessing for start/end frames and reference
   images, with downloadable results and no forced downscaling
 - Optional generation-stage MiniMax H3 latent 2x upscale, with Balanced BF16,
   Fast FP16, and Quality FP32 model choices
-- Selectable Larry v4-600 EMA and official LightX2V 4-step/8-step Turbo LoRAs,
-  including dedicated Ref2V adapters for both step counts
-- SageAttention 2 as the measured-fastest H3 default, with selectable Comfy
-  Kitchen comparison, audio-safe SLA block-sparse attention, and optional
+- Selectable TaoMate-H3 3-step, Larry v4-600 EMA and official LightX2V 4-step/8-step Turbo LoRAs,
+  including dedicated LightX2V Ref2V adapters for 4 and 8 steps
+- Audio-safe SLA block-sparse attention by default, with selectable SageAttention 2,
+  Comfy Kitchen comparison, and optional
   H3-native zero-copy Sol v0.6.2 sparse attention
 - Bit-exact fused H3 modulation projections for LightX2V Turbo
 - Two-way feed-forward chunking for ConvRot quality checkpoints
-- Optional experimental INT8 ConvRot video VAE, lazy-downloaded on first use
+- Optional official INT8 ConvRot video VAE, lazy-downloaded on first use
 - H.264 NVENC hardware encoding for MiniMax H3 video outputs
 - Optional 500K single-frame image decoder, lazy-downloaded only when selected;
-  the official FP16 video VAE remains the default
+  visual conditioning retains the official FP16 path when TensorRT decoding is selected
 - Hardware-aware ComfyUI memory mode selection
 - One-click model unloading and VRAM cache release from the UI
-- Spectrum v0.2.23 in legacy mode as the normal-generation default and experimental Turbo option
+- Spectrum v0.2.28 in legacy mode as the normal-generation default and experimental Turbo option
 - Optional experimental MMH3 tiled/chunked latent refinement for constrained VRAM
 - FirstBlockCache and native ComfyUI EasyCache alternatives
 - Matching local and Modal deployment paths
@@ -77,13 +80,13 @@ Audio content participates in staging and conditioning cache identities.
 Without voice samples, the original FL2VA graph is used.
 
 Local setup and Modal pin T8 to
-`91c1b4e9b680d07a6eacee6a3aa6b449a4697554`. Its base nodes require no additional
+`6063fafbd9c3b85c5ff40aef435ae11b2844e558` (v1.85.0 source). Its base nodes require no additional
 pip packages. Existing local installs refresh it on the next `run_h3.sh` startup;
 Modal deployments need rebuilding/redeploying. Missing nodes produce an explicit
 update-and-restart error. No new model weights are required for this option.
 
-Semantic Bridge is disabled while FL2VA voice references are active, preserving
-its preference for later runs. Prompt enhancement supports FL2VA audio tags and
+Semantic Bridge can be enabled alongside FL2VA voice references for experimental
+testing; combined voice fidelity and lip-sync are not yet validated. Prompt enhancement supports FL2VA audio tags and
 speaker assignments using the prompt and available voice labels. Voice sample
 files stay in the generation workflow; they are not uploaded to prompt writers.
 If a writer drops or invents audio labels, the original prompt is preserved with
@@ -96,7 +99,7 @@ still require matched-seed comparisons on the deployed checkpoints.
 
 ## Semantic Bridge (experimental)
 
-The H3 model settings include a default-off **Semantic Bridge** option for text
+The H3 model settings include a default-on **Semantic Bridge** option for text
 and first/last-frame FL2VA generation. Start with strength **0.10**; **0.15** is a
 stronger comparison setting. Per-token magnitude matching is fixed. Strength zero
 bypasses the adapter without loading or downloading it.
@@ -130,18 +133,27 @@ NumPy 1.26.4, and SciPy 1.15.3, and installs the CUDA 13 TensorRT Python
 builder/runtime used by the optional TensorRT VAE. The pinned ComfyUI stack
 supplies Comfy Kitchen attention through its matching `comfy-kitchen` dependency. SageAttention
 2.2.0 remains installed from the pinned prebuilt wheel for UI comparisons.
-SLA v1.4.4 is provided by the pinned PlagueKind node pack at
-`aaec055cd642b3292df18e69824c012d345ebfe8`. Selecting **SLA** exposes three
+SLA v1.5.6 is provided by the pinned PlagueKind node pack at
+`d58d006a4ea32c25c06499f2ff104f0852a045a6`. Selecting **SLA** exposes three
 quality presets: **Fast** uses validated 0.90 sparsity, **Balanced** uses the
 LoRA-distilled 0.85 sparsity, and **Quality** uses 0.85 sparsity plus a dense
 final sampling step. In a two-stage latent-upscale workflow the Quality dense
-tail applies independently to both sampling stages. Every preset uses 64-token
+tail applies independently to both sampling stages. The initial generation keeps
+its dense first step; low-noise refinement skips that first-step anchor because
+it starts from the generated latent. Two-step Quality refinement therefore runs
+sparse then dense; Fast and Balanced allow both refinement steps to run sparse.
+One-step Quality refinement remains dense. Short sequences and other native SLA
+compatibility guards still use the dense backend. Every preset uses 64-token
 blocks, protects the audio prefix, and leaves sequences shorter than 8192 tokens
-dense. Use SLA with an SLA-distilled H3 LoRA.
+dense. The graph explicitly keeps the Triton sparse engine, disables experimental
+INT8 QK and tail correction, and forces step zero dense in the initial generation. This preserves the
+previous route instead of inheriting v1.5.1's Kitchen sparse-engine defaults.
+Use SLA with an SLA-distilled H3 LoRA.
 
 The Sol-Attn integration is pinned to the reviewed v0.6.2 commit
 `930a4d6e432ff8b8ed5e30ff2f72519b92d69bdf` so its ComfyUI node contract
-remains reproducible. v0.6.2 adds MiniMax H3 support for SM86 / RTX 30-series
+remains reproducible. The original repository is unavailable; both installers
+fetch that same commit from a public fork. v0.6.2 adds MiniMax H3 support for SM86 / RTX 30-series
 GPUs without changing the attention math or routing policy. Sol uses the zero-copy H3 path, keeps conditioning KV
 exact by default, and leaves its optional INT8 attention approximations
 disabled. LightX2V Turbo additionally uses v0.6.0's bit-exact fused modulation
@@ -152,19 +164,26 @@ patched fail-closed so its E-grid adapter derives the same rows as ComfyUI,
 including visual and audio reference-conditioning rows. Quality ConvRot models use
 bit-preserving two-way feed-forward chunking above 8K packed tokens.
 
-Spectrum is pinned to v0.2.23 and is applied after LoRA, Sol-Attn, and ConvRot
+Spectrum is pinned to v0.2.28 and is applied after LoRA, Sol-Attn, and ConvRot
 feed-forward patches. Its default uses system-RAM history and replay archives,
 degree-1 forecasting, offline smoothing replay, zero spectral audio blending,
-and explicit legacy (`model_aware_mode=off`) scheduling. v0.2.23 retains that
-input contract while adding PDD-LoRA compatibility and newer SEEDS, SA-Solver,
-and reference-interoperability work. The current H3 graphs continue to use the
+and explicit legacy (`model_aware_mode=off`) scheduling. v0.2.28 retains that
+input contract, fixes retained CUDA target tensors, and streams forecasts from
+system RAM through bounded GPU workspaces for supported FinalLayer implementations.
+Unknown FinalLayer wrappers retain one-shot projection. This reduces forecast
+memory pressure; it does not guarantee faster generation or bitwise-identical output.
+It also keeps reviewed-source auditing valid on Windows CRLF checkouts instead of
+conservatively falling back to all-actual execution.
+The compiler capture safeguards and attention-backend history checks remain active.
+Our one-step tail remains authoritative
+subject to Spectrum's exact-evaluation safeguards. The current H3 graphs continue to use the
 reviewed Larry and RES sampler paths.
 Spectrum, FirstBlockCache, and EasyCache are mutually exclusive acceleration
 choices. Turbo defaults to Spectrum through the reviewed Larry Turbo and
 RES multistep sampler paths. EasyCache is also available as an experimental,
 default-off Turbo option after ComfyUI's H3 audio-carry fix. FirstBlockCache is
 also available as a default-off experimental Turbo option. Attention defaults
-to **SLA with the Quality preset**, which uses audio-safe block-sparse attention
+to **SLA with the Fast preset**, which uses audio-safe block-sparse attention
 and a dense final sampling step. Sage 2 remains available through KJNodes'
 per-model override, and Kitchen remains ComfyUI's global backend and a selectable
 comparison/fallback. SLA also offers Fast and Balanced presets, while
@@ -174,10 +193,29 @@ jobs) through Sol.
 Spectrum exposes one continuous capture-and-replay progress range to ComfyUI,
 so the Gradio live progress stream remains active during both passes.
 
+**Qwen small input attention** lives under **Model and memory (advanced)** and
+is off by default. Off uses the server's configured attention backend (Kitchen in the bundled launchers); turn it on to select upstream PyTorch/basic attention
+for both Qwen3-VL 32B text and vision encoding. The diffusion
+Sage 2 selector does not select Sage for Qwen. Changing this option invalidates
+both ComfyUI's conditioning-node cache and the process-local encoder cache;
+the next generation re-encodes, including when switching back to a previously
+used route. Keeping the option unchanged retains normal conditioning reuse.
+The preference is saved in the browser and recorded with generation settings.
+Compare the same prompt, reference media, resolution, and seed on your GPU;
+backend compatibility, speed, and conditioning quality depend on the inputs.
+Restart the UI and update/restart the bundled H3Acceleration node to use it.
+
 Turbo Spectrum remains approximate. Its conservative policy permits at most one
 forecast before a completed native refresh, which limits both acceleration and
 trajectory error at four to eight steps. Compare the same prompt and seed with
 Acceleration Off before relying on it for quality-critical output.
+
+[TaoMate-H3 3-step](https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI)
+is available under **Turbo implementation** and downloads its BF16 LoRA on first
+use. Selecting it sets 3 steps and the simple scheduler; generation uses Euler,
+LoRA strength 0.7, and the existing unguided sampler (CFG 1.0). It supports
+**Text to video** and **First / last frame** with the FL2VA base. The same adapter
+is also available for **Reference media** generation with Ref2VA.
 
 Turbo defaults to the LightX2V four-step adapter at strength 1.0 (FL2V v1.2
 768p or the dedicated Ref2V 544p adapter). Larry v4-600 EMA remains available
@@ -207,6 +245,11 @@ Ref2VA keys so workflow construction remains mode-specific.
 
 ## Run locally
 
+Local and Modal provisioning and the UI test environment pin Gradio 6.27.0.
+Existing local installs refresh an older Gradio on the next `run_h3.sh` startup;
+Spectrum also refreshes from its shared source pin. Modal deployments require a
+rebuild/redeploy to pick up these dependency changes.
+
 ```bash
 git clone <repository-url>
 cd minimax-h3
@@ -214,14 +257,15 @@ bash run_h3.sh
 ```
 
 The first run creates `h3/`, installs ComfyUI and dependencies, and preloads the
-Speed FL2VA checkpoint plus the Fast NVFP4/AWQ text encoder, default FP32 latent-upscaler checkpoint, shared VAEs, and default 4-step Turbo LoRAs. The Quality and Original checkpoints plus the selectable 8-step Turbo LoRA download on demand when selected; the Balanced preset's 6-step Larry LoRA is preloaded. SeedVR2 models, the
-LTX-2.5 2x upscaler IC-LoRA, and SwiftVR checkpoints are lazy and download only
+Singularity pruned v1.3 INT8 checkpoint plus the Fast NVFP4/AWQ text encoder, default FP32 latent-upscaler checkpoint, shared VAEs, and default 4-step Turbo LoRAs. The Speed, Quality and Original checkpoints plus the selectable 3-step and 8-step Turbo LoRAs download on demand when selected; the Balanced preset's 6-step Larry LoRA is preloaded. SeedVR2 models, the
+LTX-2.5 upscaler and restoration IC-LoRAs, and SwiftVR checkpoints are lazy and download only
 when their post-processing option is first used. The installer pins the official
 SwiftVR inference source; no SWIFTVR_CHECKPOINT_DIR is required unless you want
-to use an existing checkpoint directory. The experimental
-INT8 ConvRot video VAE
-is also lazy and downloads only when its default-off checkbox is enabled.
-The experimental **TensorRT video VAE** is enabled by default. Local and Modal
+to use an existing checkpoint directory. The official INT8 ConvRot video VAE is selected by default for Fast and
+Singularity, and downloads on first use. Balanced and Quality select FP16.
+Both local and Modal launch ComfyUI with
+`--fast fp16_accumulation` for the faster H3 VAE encoder and decoder kernels.
+The experimental **TensorRT video VAE** is disabled by default. Local and Modal
 setup install TensorRT and sync the pinned ComfyUI-H3VAE_TRT node. On first use,
 the app downloads the decoder ONNX source and automatically builds its local
 engine; the adjacent **Compile TensorRT VAE engine** button remains available
@@ -237,30 +281,49 @@ spent.
 The experimental **Single-frame 500K** image VAE is a separate 9.69 GB lazy
 download. It is used only for Image results; Video continues to use the
 official H3 video VAE regardless of this image setting.
-The native H3 latent upscaler is also default-off and lazy-downloads only the
-selected checkpoint. **Balanced (BF16)** is the default choice; **Fast (FP16)**
-and **Quality (FP32)** remain selectable.
+The native H3 latent upscaler starts enabled for video and lazy-downloads the
+selected checkpoint. **Quality (FP32)** is the default choice; **Fast (FP16)**
+and **Balanced (BF16)** remain selectable.
 The sampling presets also select the H3 text encoder: **Fast** uses
-**NVFP4 / AWQ**, **Balanced** uses **INT8 ConvRot**, and **Quality** uses
-**BF16** (51.5 GB). Fast is the initial preset and its NVFP4/AWQ encoder is preloaded; INT8 ConvRot (27.1 GB) downloads on first selection. Fast and Balanced
-disable model offload by default while leaving the checkbox editable; Quality
-automatically enables and locks **Offload models
-between H3 stages**. After a fresh encode this keeps the text encoder, diffusion
-model, optional latent upscaler, and VAEs from remaining resident together. When
-unchanged BF16 conditioning is reused, the encoder never loads and all remaining
-stage offloads are skipped for that run. INT8 and NVFP4 keep the current all-VRAM
-path by default; stage offload can still be enabled manually for either one.
+**NVFP4 / AWQ**, while **Balanced** and **Quality** use **INT8 ConvRot**.
+Singularity is the initial preset: it selects the Singularity base model and
+otherwise uses Fast settings. Its NVFP4/AWQ text encoder is preloaded; INT8
+ConvRot (27.1 GB) downloads on first selection. All presets leave model offload
+disabled by default and editable. **BF16** (51.5 GB) is available only as a
+manual text-encoder selection; selecting it automatically enables and locks
+**Offload models between H3 stages**. When unchanged BF16 conditioning is
+reused, the encoder never loads and all remaining stage offloads are skipped
+for that run. INT8 and NVFP4 keep the current all-VRAM path by default; stage
+offload can still be enabled manually for either one.
+
+**FastH3 8-Step V2** is available as a lazy base-model download using the official
+ComfyUI INT8 ConvRot checkpoint. It shares the selected Qwen3-VL text encoder,
+video VAE, audio VAE, decoders, finishing, and output pipeline with the other H3
+profiles. The checkpoint supports Text to video only. Selecting it locks the
+conditioning mode to Text to video and uses its trained Normal, 8-step,
+simple-scheduler path with native Kitchen attention; Turbo adapters are not
+applied on top of the distilled checkpoint.
 **Reuse unchanged prompt and media** is enabled by default. Uploaded H3 inputs are
-staged under content-derived names, so repeating the same prompt and ordered media
-combination reuses the expensive text/media conditioning. The cache identity
-contains only the prompt, ordered image/audio/video content, selected text encoder,
-and reference-media encoder sizing. Generation-only changes such as seed, steps,
-sampler, attention/cache mode, duration, resolution, output format, or latent
-upscaling still rebuild the required latent/sampling graph but do not re-run the
-text encoder. A changed prompt, media file/order, text encoder, or reference-media
-encoder sizing performs a fresh encode and retains normal BF16 stage offloading.
-Disable reuse to stage fresh media copies and use unconditional BF16 offloading for
-that request.
+staged under content-derived names. Qwen reuse requires matching source media,
+prompt tokens, text encoder, attention route, and actual visual tensor geometry.
+Seed, steps, sampler, and diffusion attention changes can reuse matching encoding.
+Changing the canvas or reference-video duration re-encodes if it changes Qwen's
+visual inputs. In a two-stage image-conditioned workflow, the low-resolution and
+high-resolution stages therefore have separate entries; later matching jobs can
+reuse both. Text-only encoding can still be shared across resolutions.
+
+Disable reuse to force fresh Qwen and native/T8 conditioning on every execution,
+including refinement and text-only requests, and use unconditional BF16 stage
+offloading. The attention toggle independently selects the Qwen route in either
+reuse mode. Logs distinguish `Qwen cache disabled`, `Qwen cache miss`, and
+`Qwen cache hit`, with short cache/input identifiers for comparisons.
+
+A Qwen cache hit skips only the text/vision encoder. `MiniMaxH3AudioConditioningT8`
+may still run its image/audio VAE work, especially at a different resolution.
+ComfyUI can reuse the entire conditioning node when all its inputs and dependencies
+match and the result remains cached. Progress reports the actual number of cached
+workflow nodes and suppresses empty cache notifications; a few cached loaders do
+not imply that the encoder or the whole generation was cached.
 
 **Videos per batch** generates one to four variants (one by default). Multi-video
 batches assign every video an independent random seed and show all completed videos
@@ -285,7 +348,9 @@ configurable; text-to-video does not load or apply image guides.
 The tab's **Official workflows and model downloads** section installs the upstream JSON
 templates under **Workflows → Browse → LTX 2.5** in the proxied ComfyUI editor.
 Modal re-synchronizes these image-local templates from the pinned LTXVideo node
-on every cold start before launching ComfyUI.
+on every cold start before launching ComfyUI. The LTXVideo HDR dependencies
+use NumPy 1.26-compatible Colour Science 0.4.6 and OpenImageIO 3.0.12;
+Kornia 0.8.3 works with the node's updated pyramid blending import.
 Its open **Official workflows and model downloads** panel shows live model
 availability and Hugging Face source/license links. It can download every model
 for the selected workflow or every missing model in the displayed inventory at
@@ -299,6 +364,72 @@ on first use. It supports tagged song sections and a maximum duration of five
 minutes, with tiled audio decoding enabled by default for lower peak VRAM.
 Later runs check remote metadata for the preloaded set and refresh only stale
 files; lazy checkpoints remain local and are fetched again if missing or incomplete.
+The **Qwen Image 2.1** tab uses ComfyUI's native `TextEncodeQwenImage21`
+workflow for both generation and editing. The BF16 DiT and text encoder are
+selected by default; INT8 ConvRot and W4A8 alternatives are available. The selected
+DiT, Qwen3-VL 8B encoder, and BF16 VAE download on first use from
+[Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1).
+Image edit accepts up to 10 inputs and treats `image1` as the edit target.
+Single-image prompts refer to the input naturally; multi-image prompts use
+`<image1>`, `<image2>`, and subsequent tags. Generated
+images and their settings are saved with the other application outputs. The
+official 40-step Euler/simple path is the default, native ~4 MP aspect-ratio
+sizes are accepted, and Comfy Kitchen INT8 attention plus Spectrum
+hidden-state forecasting are available as experimental opt-in speed settings.
+For image edits, **Edit output size** offers three exclusive choices:
+**Match first image size** (default), **Max resolution (up to 4 MP)**, or
+**Use width and height above**. Max resolution scales the first reference
+image's aspect ratio toward 4 MP, rounds the output to multiples of 32, and
+keeps both sides within 2752 pixels.
+
+The Qwen tab offers three editable presets: **Fast** selects INT8 ConvRot,
+Viggle Turbo v0.2, five steps, and accelerator Off; **Normal** selects BF16,
+Turbo Off, 25 steps, and Spectrum (Quality); **Quality** selects BF16, Turbo
+Off, 40 steps, and Spectrum (Quality). Quality is selected initially. The text
+encoder and other controls retain their chosen values when switching presets.
+
+The Qwen tab also offers **Viggle Turbo v0.2** as an optional ComfyUI LoRA mode.
+Selecting it downloads the v0.2 rank-256 adapter on first use and sets five
+steps, Euler, CFG 1, and accelerator Off. The steps slider remains editable;
+other counts use evenly spaced Qwen sigma nodes and are experimental. At the
+recommended five steps, a bundled ComfyUI node applies Qwen's resolution-based
+time shift to Viggle's published `[1.0, 0.875, 0.75, 0.5, 0.25]` nodes without
+a terminal stretch. Turbo editing accepts up to three references. The base mode
+retains its existing controls and up to ten references. Viggle Turbo is a
+preview released under the Qwen Research License for non-commercial research
+or evaluation; commercial use requires a separate licence.
+
+**Alibaba PAI PDD 4-step** is a second Turbo mode. Selecting it downloads
+[Qwen-Image-2.1-Fun-Acc-4Step.safetensors](https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Acc-LoRAs)
+on first use and sets four steps, Euler, CFG 1, and accelerator Off. The
+bundled ComfyUI node loads its PDD output heads, backbone LoRA, and trained
+normalization weights and uses the checkpoint's stored sigma schedule.
+This mode requires exactly four steps. Image edits turn the Qwen prefix KV
+cache off, matching the published examples. Alibaba notes that small dense
+text may be less legible and some edits may be softer or darker than the
+40-step base model. The adapter inherits Qwen's research license.
+
+**Pruna 8-step** and **Pruna 5-step** are additional Qwen Image 2.1 LoRA
+modes. Each downloads its v0.1 adapter on first use and uses the matching
+published sigma schedule through the same ComfyUI backend. Select 8 steps for
+higher quality or 5 for speed. These modes require their exact step count,
+Euler, CFG 1, and accelerator Off; editing accepts up to three references.
+Pruna recommends 1K output and detailed prompts. This first release is below
+the base model's visual quality, and the 5-step adapter has visibly lower
+quality than the 8-step adapter. See the
+[Pruna model card](https://huggingface.co/PrunaAI/Pruna-Qwen-Image-2.1)
+for the schedules and research license.
+
+The **YuE2** tab uses ComfyUI's native YuE2 nodes (ComfyUI v0.36.0 or newer).
+Its INT8 ConvRot checkpoint (about 4 GB) is selected by default; the BF16
+checkpoint is an optional alternative. The selected checkpoint downloads on
+first use into ComfyUI/models/checkpoints/. Use **Full score** to plan melody
+and chords, **Melody only** for a melody plan, or **Direct generation** to skip
+the score planner. Lyrics should use section tags such as [verse] and [chorus].
+Tiled audio decode is enabled by default for long songs. YuE2 weights from
+[Comfy-Org/YuE2](https://huggingface.co/Comfy-Org/YuE2) are licensed
+CC-BY-NC-4.0. Generation is exposed as /generate_yue2; style, lyrics, and an
+optional edited ABC score are accepted with the generation settings.
 On Debian/Ubuntu standalone hosts, `run_h3.sh` also installs the `ffmpeg` system
 package through `apt-get` (using `sudo` when needed) if `ffmpeg` or `ffprobe` is
 missing.
@@ -308,10 +439,14 @@ move models to system RAM. Without an offload barrier, ComfyUI smart memory can
 still retain the compact NVFP4/INT8 stack in VRAM. Do not launch with
 `--gpu-only` when using the 51.5 GB BF16 text encoder: under that mode ComfyUI
 sets each model's offload device to CUDA, so an unload request cannot release
-its VRAM residency.
+its VRAM residency. CUDA allocation and the Comfy model compiler stay enabled
+globally. Only a standard latent-refinement pass whose video latent exceeds one
+and a half million spatiotemporal positions bypasses the compiler; this isolates an AIMDO
+malloc-graph incompatibility with SLA's high-resolution Triton specialization
+without slowing ordinary generation or tiled refinement.
 
-The **MiniMax H3** tab includes local, Gemini, and Lightning AI prompt writers.
-The local writer
+The **MiniMax H3** tab includes local, Gemini, and Lightning AI prompt writers,
+with Lightning AI selected by default. The local writer
 uses `lightx2v/MiniMax-H3-Prompt-Rewriter-LoRA-8B` with
 `Qwen/Qwen3-VL-8B-Instruct-FP8` by default; the BF16
 `Qwen/Qwen3-VL-8B-Instruct` base is selectable. It supports the four tasks used
@@ -324,7 +459,8 @@ repository or local path with `H3_PROMPT_REWRITER_ADAPTER` when needed.
 Gemini combines the current text, active first/last-frame or reference
 image/video/audio inputs, duration, and resolution with the bundled `prompt.txt`
 system instruction. It supports `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`,
-`gemini-3.5-flash`, and `gemini-3.5-flash-lite`. Use Gemini for the separate
+`gemini-3.5-flash`, and `gemini-3.5-flash-lite`, with `gemini-3.5-flash-lite`
+selected by default. Use Gemini for the separate
 Reference media mode, which is not one of the four tasks supported by the local
 adapter. Set `GEMINI_API_KEY` in the server environment, or enter a temporary
 key in the enhancer panel; a key entered in the UI is passed only to enhancement
@@ -378,11 +514,21 @@ slice. This keeps official-versus-500K comparisons on the same denoising
 trajectory when both request one image. Use the official VAE for multi-image
 results.
 
-The **LTX-2.5** tab and **MiniMax Music 3** tab include their own Gemini prompt
-writers. They create or enhance prompts from text plus optional keyframe or
-visual-reference images, using `prompt_ltx25.txt` and `prompt_music3.txt`.
-Their UI/API operations are exposed as `/enhance_ltx25_prompt` and
-`/enhance_music3_prompt`.
+The **Qwen Image 2.1**, **LTX-2.5**, **MiniMax Music 3**, and **YuE2** tabs
+also offer Lightning AI and Gemini prompt writers, with Lightning AI selected
+by default. Lightning AI uses the same fixed model, server environment key,
+and temporary key behavior as the H3 writer. Gemini remains selectable and
+uses `gemini-3.5-flash-lite` by default. Each writer uses its own bundled
+system prompt: `prompt_qwen_image21.txt`, `prompt_ltx25.txt`,
+`prompt_music3.txt`, or `prompt_yue2.txt`.
+
+LTX-2.5 and Music 3 can use optional keyframe or visual-reference images.
+Qwen Image 2.1 understands text-to-image and image-edit modes: it refers to a
+single edit input naturally and uses ordered `<image1>`, `<image2>`, ... tags
+for multi-image edits. YuE2 jointly creates or enhances the production style
+and sectioned lyrics. Their UI/API operations are `/enhance_ltx25_prompt`,
+`/enhance_music3_prompt`, `/enhance_qwen_image21_prompt`, and
+`/enhance_yue2_prompt`, respectively.
 
 ### Native H3 latent upscale
 
@@ -393,7 +539,7 @@ finishes a 512×512 H3 generation, upscales its clean video latent 2x, then
 lightly re-noises and refines it at 1024×1024. The clean first-pass audio is
 preserved for the final output.
 
-This is not a gallery or post-processing option. It is disabled by default,
+This generation option starts enabled for video,
 defaults to two high-resolution refinement steps, and disables cache wrappers
 across the two samplers. Enabling it automatically rounds both final dimensions
 to the nearest multiple of 64 so the half-resolution pass remains on H3's
@@ -430,10 +576,17 @@ and exposes every selected result (including unchanged originals) for download.
 The SeedVR2 model and VAE remain lazy-downloaded, and the optional resident-model
 unload control can reduce peak VRAM before this preprocessing pass.
 
-Generate a video, open **Gallery**, or expand **Import a local video** and add
-an existing clip to the library. Select its thumbnail and choose a method under
-**Enhance selected video**. Each run preserves the source and adds a new
-processed video to the gallery. Choose an output-resolution preset from
+Open **Gallery** to browse the video library (the default), or switch **Gallery
+type** to **Image** or **Audio**. Image mode includes generated Qwen/H3 stills
+and SeedVR2 results; Audio mode includes MiniMax H3, MiniMax Music 3, and YuE2
+outputs. All three use the same card, preview, settings, import, and download
+layout. **Import local media** accepts a matching file for the active library.
+Image mode uses the existing one-step
+SeedVR2 workflow to upscale the selected still while preserving its aspect ratio;
+the processed image is added back to the image gallery with its settings and a
+download link. Audio mode provides playback and downloads. Video mode retains
+all existing enhancement methods. Each run
+preserves the source and adds a new processed output. Choose a target preset from
 **1280 × 1280**, **1920 × 1920**, **2560 × 2560**, or **3840 × 3840**; the source
 is fitted inside that square without cropping, so its original aspect ratio is
 preserved. **SeedVR2 2x** uses ComfyUI's native one-step restoration workflow.
@@ -454,18 +607,37 @@ lower peak VRAM is more important than avoiding an H3 model reload on the next
 generation. **48 fps interpolation** remains available as a non-upscale option
 and requires FFmpeg on the server `PATH`.
 
+Gallery also offers **LTX-2.5 IC-LoRA Decompression** to remove compression
+artifacts and **LTX-2.5 IC-LoRA Deblur** to restore defocused footage. These
+options preserve the source resolution and audio; the target-resolution selector
+is hidden. Describe the source scene in **LTX-2.5 scene prompt**; the appropriate
+restoration instructions are added automatically. Both use a single-stage,
+1x-reference IC-LoRA workflow with the base model selected in the **LTX 2.5** tab.
+**LTX-2.5 CQ Video Enhancer V2** is also available for prompt-free generative
+quality enhancement of low-resolution or poor-quality video. It preserves the
+source resolution and audio and lazily downloads the V2 video LoRA from
+[CQdesign's enhancer repository](https://huggingface.co/CQdesign/LTX-2.5-CQ-Video-and-Image-Enhancer-LoRAs).
+The adapters download on first use and require access to their separate gated
+[Decompression](https://huggingface.co/Lightricks/LTX-2.5-22b-IC-LoRA-Decompression)
+and [Deblur](https://huggingface.co/Lightricks/LTX-2.5-22b-IC-LoRA-Deblur)
+repositories. Deblur targets defocus, not motion blur. Use **Split source into
+clips before LTX processing** for restoration clips that exceed available VRAM.
+
 LTX-2.5 upscaling remains a single full-video pass by default. If a long or
 high-resolution source runs out of VRAM, enable **Split source into clips before
-LTX upscaling** in Gallery or the MiniMax H3 post-processing settings. The
+LTX processing** in Gallery, or **Split source into clips before LTX upscaling**
+in the MiniMax H3 post-processing settings. The
 default target is 5 seconds per clip; cuts are adjusted to LTX-compatible frame
 counts, clips are upscaled sequentially, and their video streams are joined
 without an additional video encode. The final file is trimmed to the original
 frame count and remuxed with the original source audio. Because clips are
 generated independently, a visible detail or motion change can occur at a cut.
 
-SeedVR2 offers **3B NVFP4**, **3B INT8**, **7B NVFP4 (default)**, and
-**7B Sharp NVFP4** model choices. Only the selected checkpoint downloads on first
-use; all choices share the same lazy FP16 SeedVR2 VAE. The native workflow uses
+SeedVR2 offers **7B FP16**, **7B INT8 (default)**, **3B FP16**, **3B INT8**,
+**7B Sharp FP16**, experimental **7B MXFP8**, and legacy fast/experimental
+**NVFP4** choices. Only the
+selected checkpoint downloads on first use; all choices share the same lazy FP16
+SeedVR2 VAE. The native workflow uses
 1024-pixel VAE encode/decode tiles for the RTX PRO 6000 target. SeedVR2 and main
 H3 generation run eagerly because full-model compile did not improve measured
 performance and conflicts with the active attention and cache optimizations.
@@ -476,7 +648,8 @@ tab. It returns a public HTTP download URL instead of a client-local temporary
 file path. The `/generate_video_advanced` endpoint exposes every generation
 control; its current request schema is linked from the API tab.
 The LTX tab is also available as `/generate_ltx25_video` and shares the same
-single-job ComfyUI queue.
+single-job ComfyUI queue. Qwen Image 2.1 is available as
+`/generate_qwen_image21` and uses that queue as well.
 
 `run_h3.sh` binds Gradio to `0.0.0.0`, so use host firewall rules or a trusted
 network when the machine is reachable by other devices.
@@ -507,11 +680,27 @@ functions and requires it to contain `HF_TOKEN`. If your existing secret uses a
 different name, deploy with `H3_MODAL_HF_SECRET=your-secret-name`. To make a
 hosted prompt enhancer available without entering a key in the UI, also store
 `GEMINI_API_KEY` and/or `LIGHTNING_API_KEY` in that Modal Secret.
+The Modal runtime mounts every model-specific prompt instruction file, including
+the Qwen Image 2.1 and YuE2 writers, without rebuilding the heavy ComfyUI image.
 
 The deployment pins an immutable ComfyUI revision with its required
-frontend package 1.51.9. This includes the HEVC remux fix, refreshed workflow
-templates, native MiniMax Music 3, LTX 2.5 INT8 support, and Comfy Kitchen
-attention.
+frontend package 1.53.6, Comfy Kitchen 0.2.35 and upstream aimdo 0.5.5.
+The source also pins workflow templates 0.11.68 and embedded docs 0.5.12.
+This update includes native Qwen Image 2.1 generation/editing, corrected edit
+KV-cache placement, compiled Qwen transformer blocks, sparse attention, Comfy
+Compiler, optional H3 reference VAEs and DiffSynth/ModelScope H3 LoRA support.
+KJNodes 1.5.1 includes the matching H3 low-memory attention callback fix.
+This ComfyUI revision also fixes offloaded H3 VAE normalization and blends tiled
+VAE output against composited neighbours.
+
+TensorRT VAE is pinned to `4360e00867eca86ab61b3899216c0ec281367b46`.
+Upstream now owns optional encoder loading and single-frame encoding. Our
+version-5 patch retains reference single-frame decoding, temporal tail trimming
+and explicit FP32 decoder normalization casts after ONNX parsing. Provisioning
+also installs ONNX for graph-based quantization detection in the compiler. The engine
+quality marker is version 4, so existing engines rebuild lazily on the next
+TensorRT decode. Model weights are reused. These source and CPU checks do not
+replace matched-seed video/audio and memory validation on the deployment GPU.
 Changing that pin invalidates the Modal image cache so ComfyUI and its matching
 `comfy-kitchen` dependency are rebuilt together.
 
@@ -554,27 +743,29 @@ pins, is copied into an earlier image layer.
 
 ## Validation
 
-The fast checks do not download models or require a GPU:
-
-Voice-reference coverage: `python -m unittest discover -s tests -q` and
-`python tests/browser_voice_refs.py` (headless Chrome/Chromium).
+The consolidated checks run offline and do not require a GPU:
 
 ```bash
-python3 -m py_compile \
-  gradio_app.py h3_ui/*.py h3_attention.py h3_models.py h3_node_patches.py h3_prompt_rewriter.py h3_requirements.py \
-  modal_h3.py setup_h3.py custom_nodes/H3Acceleration/__init__.py
-python3 h3_requirements.py
-python3 h3_models.py
-python3 h3_node_patches.py --selftest
-python3 h3_attention.py --selftest
-python3 h3_prompt_rewriter.py
-python3 gradio_app.py --selftest
-bash -n run_h3.sh
+python -m tests
+python -m tests --browser
 ```
+
+The first command runs discovery, all standalone service self-tests and 15 baseline
+workflow fixtures. The second adds settings migration and voice-reference browser
+acceptance using headless Chrome/Chromium. `python gradio_app.py --selftest` remains
+available. CPU PyTorch numerical tests and cached upstream contract tests run when
+their optional dependencies are present. Supported GPU inference, TensorRT
+compilation and deployment remain separate checks.
+
+See [the architecture and validation guide](docs/settings-refactor.md) for setup,
+module ownership and cancellation boundaries.
 
 ## Repository layout
 
-- `gradio_app.py` — UI, workflow construction, and ComfyUI API client
+- `gradio_app.py` — launcher and temporary compatibility API
+- `h3_app/` — configuration, model services, workflows, generation, media and execution
+- `h3_ui/` — application composition, visible sections, events and UI adapters
+- `h3_sources.py` — shared local/Modal source pins
 - `h3_prompt_rewriter.py` — lazy local Qwen3-VL 8B + MiniMax-H3 LoRA writer
 - `setup_h3.py` — local environment and model provisioning
 - `modal_h3.py` — Modal image, volume, and service lifecycle

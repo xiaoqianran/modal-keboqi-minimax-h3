@@ -5,14 +5,41 @@ No UI, provider SDK, filesystem or model downloads belong in this module.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Mapping
-import math
+
+from .resources import resolve_decoders
 
 LIGHTX2V_4STEP = "LightX2V / 4-step (FL2V 768p · Ref2V 544p)"
 LIGHTX2V_8STEP = "LightX2V v1.0 / 8-step 768p"
 LARRY = "Larry v4-600 EMA"
-TURBO_STEPS = {LIGHTX2V_4STEP: 4, LIGHTX2V_8STEP: 8, LARRY: 6}
+TAOMATE_3STEP = "TaoMate-H3 / 3-step"
+FASTH3_8STEP_PROFILE = "FastH3 8-Step V2"
+TEXT_TO_VIDEO_MODE = "Text to video"
+TURBO_STEPS = {LIGHTX2V_4STEP: 4, LIGHTX2V_8STEP: 8, LARRY: 6, TAOMATE_3STEP: 3}
+
+
+def is_fasth3_8step_profile(name: str) -> bool:
+    return str(name).strip().lower() == FASTH3_8STEP_PROFILE.lower()
+
+
+def apply_model_profile_constraints(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply sampling controls intrinsic to distilled base checkpoints."""
+    current = dict(values)
+    if is_fasth3_8step_profile(current.get("model_profile", "")):
+        current.update(
+            mode=TEXT_TO_VIDEO_MODE,
+            generation_mode="Normal",
+            steps=8,
+            scheduler="simple",
+            attention_mode="Kitchen",
+        )
+    return current
+
+
+def turbo_minimum_steps(variant: str) -> int:
+    return 3 if variant == TAOMATE_3STEP else 4
 
 
 @dataclass(frozen=True)
@@ -30,10 +57,12 @@ class SamplingSettings:
     latent_upscale_refine_steps: int = 2
     text_encoder: str = "NVFP4 / AWQ"
     stage_model_offload: bool = False
+    encoder_small_input: bool = False
 
 
 PRESET_FIELDS = tuple(SamplingSettings.__dataclass_fields__)
 PRESETS = {
+    "Singularity": SamplingSettings(steps=15),
     "Fast": SamplingSettings(steps=15),
     "Balanced": SamplingSettings(
         steps=18,
@@ -53,8 +82,7 @@ PRESETS = {
         auto_megapixels="4 MP",
         turbo_variant=LIGHTX2V_8STEP,
         sla_preset="Quality",
-        text_encoder="BF16",
-        stage_model_offload=True,
+        text_encoder="INT8 ConvRot",
     ),
 }
 
@@ -91,14 +119,14 @@ class GenerationRequest:
     sampling: SamplingSettings = field(default_factory=SamplingSettings)
     output: OutputSettings = field(default_factory=OutputSettings)
     finishing: FinishingSettings = field(default_factory=FinishingSettings)
-    preset: str = "Fast"
+    preset: str = "Singularity"
     generation_mode: str = "Turbo"
     mode: str = "Text to video"
-    model_profile: str = "Speed"
+    model_profile: str = "Singularity"
     cache_mode: str = "Spectrum"
-    use_trt_vae: bool = True
+    use_trt_vae: bool = False
     use_int8_vae: bool = False
-    semantic_bridge: bool = False
+    semantic_bridge: bool = True
     semantic_bridge_alpha: float = 0.10
     fl2va_audio_1: Any = None
     fl2va_audio_2: Any = None
@@ -169,6 +197,8 @@ def resolve_settings(
     inactive: set[str] = set()
     issues: list[str] = []
     sampling, output, finishing = request.sampling, request.output, request.finishing
+    generation_mode = request.generation_mode
+    fasth3_8step = is_fasth3_8step_profile(request.model_profile)
 
     def adjusted(key, before, after, reason):
         if before != after:
@@ -239,7 +269,34 @@ def resolve_settings(
         )
     if not finishing.latent_upscale:
         inactive.add("latent_upscale_refine_steps")
-    if request.generation_mode != "Turbo":
+    if fasth3_8step:
+        if request.mode != TEXT_TO_VIDEO_MODE:
+            issues.append("FastH3 8-Step V2 supports Text to video only.")
+        generation_mode = adjusted(
+            "generation_mode",
+            generation_mode,
+            "Normal",
+            "FastH3 8-Step V2 is already distilled and does not use a Turbo LoRA.",
+        )
+        sampling = replace(
+            sampling,
+            steps=adjusted(
+                "steps", sampling.steps, 8, "FastH3 V2 uses its trained 8-step schedule."
+            ),
+            scheduler=adjusted(
+                "scheduler",
+                sampling.scheduler,
+                "simple",
+                "FastH3 V2 uses the simple scheduler.",
+            ),
+            attention_mode=adjusted(
+                "attention_mode",
+                sampling.attention_mode,
+                "Kitchen",
+                "FastH3 V2 uses ComfyUI's native Kitchen attention path.",
+            ),
+        )
+    if generation_mode != "Turbo":
         inactive.add("turbo_variant")
     if sampling.attention_mode not in {"Sol-Attn", "Auto"}:
         inactive.update(
@@ -249,10 +306,17 @@ def resolve_settings(
         inactive.add("sla_preset")
     if request.mode != "First / last frame":
         inactive.add("auto_megapixels")
-    minimum = 4 if request.generation_mode == "Turbo" else 10
+    if fasth3_8step:
+        minimum = 8
+    else:
+        minimum = (
+            turbo_minimum_steps(sampling.turbo_variant)
+            if generation_mode == "Turbo"
+            else 10
+        )
     if sampling.steps < minimum:
         issues.append(
-            f"{request.generation_mode} requires at least {minimum} sampling steps."
+            f"{generation_mode} requires at least {minimum} sampling steps."
         )
     if (
         finishing.latent_upscale
@@ -279,13 +343,11 @@ def resolve_settings(
             elif empty_slot:
                 issues.append("Fill FL2VA voice slots in order, starting with voice 1.")
                 break
-    if request.mode == "Reference media" or has_voice_refs:
+    if request.mode == "Reference media":
         adjusted(
             "semantic_bridge",
             bridge,
             False,
-            "Semantic Bridge is disabled for FL2VA voice references."
-            if has_voice_refs else
             "Semantic Bridge v1 supports FL2VA only; disabled for reference media.",
         )
         bridge = False
@@ -301,13 +363,28 @@ def resolve_settings(
         issues.append(
             "Semantic Bridge strength must be a finite number between 0 and 1."
         )
+    try:
+        decoders = resolve_decoders(
+            fmt,
+            output.image_vae,
+            use_trt_vae=request.use_trt_vae,
+            use_int8_vae=request.use_int8_vae,
+        )
+    except ValueError as exc:
+        issues.append(str(exc))
+        decoders = None
+    if decoders and decoders.video_decoder == "none":
+        inactive.update({"use_trt_vae", "use_int8_vae"})
     effective = replace(
         request,
         sampling=sampling,
         output=output,
         finishing=finishing,
+        generation_mode=generation_mode,
         cache_mode=cache,
         semantic_bridge=bridge,
+        use_trt_vae=decoders.use_trt_vae if decoders else request.use_trt_vae,
+        use_int8_vae=decoders.use_int8_vae if decoders else request.use_int8_vae,
     )
     return ResolvedSettings(
         request, effective, tuple(adjustments), frozenset(inactive), tuple(issues)
@@ -332,14 +409,25 @@ def transition_modes(
     if action == "generation_mode" and mode != previous:
         current.update(
             modes.get(mode)
-            or asdict(preset_settings(current.get("preset", "Fast"), mode))
+            or asdict(preset_settings(current.get("preset", "Singularity"), mode))
         )
     elif action in {"preset", "restore"}:
-        current.update(asdict(preset_settings(current.get("preset", "Fast"), mode)))
+        preset = current.get("preset", "Singularity")
+        current.update(asdict(preset_settings(preset, mode)))
+        current["use_int8_vae"] = preset in {"Singularity", "Fast"}
+        current["use_trt_vae"] = False
+        if preset == "Singularity":
+            current["model_profile"] = "Singularity"
+    elif action == "use_trt_vae" and current.get("use_trt_vae"):
+        current["use_int8_vae"] = False
+    elif action == "use_int8_vae" and current.get("use_int8_vae"):
+        current["use_trt_vae"] = False
     elif action == "turbo_variant" and mode == "Turbo":
         current.update(
             steps=TURBO_STEPS.get(current["turbo_variant"], 4), scheduler="simple"
         )
+    current = apply_model_profile_constraints(current)
+    mode = current.get("generation_mode", mode)
     modes[mode] = {
         key: current[key]
         for key in (*PRESET_FIELDS, "preset", "cache_mode")
