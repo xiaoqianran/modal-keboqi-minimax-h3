@@ -16,3 +16,8 @@ gradio_outputs/
 !.env.example
 .idea/
 .vscode/
+
+# Standalone React frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo

@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 import gradio as gr
 
+from .batch_view import build_batch_view
+from .studio_api import build_studio_api
+
 
 @dataclass(frozen=True)
 class AppViews:
@@ -30,8 +33,10 @@ def create_app_views() -> AppViews:
 
     tabs = gr.Tabs(elem_id="h3-main-tabs")
     with tabs:
-        with gr.Tab("MiniMax H3"):
+        with gr.Tab("Create"):
             generation = gr.Row(elem_classes=["h3-generator-shell"])
+        with gr.Tab("Batch Studio"):
+            build_batch_view()
         with gr.Tab("Qwen Image 2.1"):
             qwen_image21 = gr.Group()
         with gr.Tab("LTX 2.5"):
@@ -44,6 +49,10 @@ def create_app_views() -> AppViews:
             gallery = gr.Group(elem_classes=["h3-gallery-shell"])
         with gr.Tab("API"):
             api = gr.Group()
+
+    # Standalone React Studio endpoints are hidden from the Gradio interface.
+    build_studio_api()
+
     return AppViews(
         tabs,
         generation,
@@ -55,3 +64,4 @@ def create_app_views() -> AppViews:
         api,
         gallery_tab,
     )
+
