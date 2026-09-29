@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 import re
 import subprocess
 import time
@@ -10,7 +12,23 @@ from urllib.request import urlopen
 
 APP = "minimax-h3"
 TRACE = re.compile(r"\[H3_STARTUP_TRACE\]\s+t=([\d.]+)s\s+phase=(\S+)")
-GPU_NAMES = ("RTX PRO 6000", "RTX 6000")
+def configure_network() -> None:
+    proxy = "http://127.0.0.1:7890"
+    if not os.environ.get("HTTPS_PROXY"):
+        try:
+            with socket.create_connection(("127.0.0.1", 7890), timeout=0.25):
+                pass
+        except OSError:
+            pass
+        else:
+            os.environ["HTTPS_PROXY"] = proxy
+            os.environ["HTTP_PROXY"] = proxy
+            os.environ["ALL_PROXY"] = proxy
+    bypass = [item for item in os.environ.get("NO_PROXY", "").split(",") if item]
+    for item in ("127.0.0.1", "localhost", ".modal.run"):
+        if item not in bypass:
+            bypass.append(item)
+    os.environ["NO_PROXY"] = ",".join(bypass)
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -18,7 +36,7 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def modal(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run("uv", "run", "--with", "modal", "modal", *args, check=check)
+    return run("uv", "run", "--with", "modal[api-proxy-support]", "modal", *args, check=check)
 
 
 def workspace() -> str:
@@ -26,7 +44,7 @@ def workspace() -> str:
 
 
 def url() -> str:
-    return f"https://{workspace()}--{APP}-serve.modal.run"
+    return f"https://{workspace()}--h3.modal.run"
 
 
 def app_id() -> str:
@@ -37,45 +55,26 @@ def app_id() -> str:
     raise RuntimeError(f"deployed app {APP!r} not found")
 
 
-def classify_containers() -> tuple[list[str], list[str]]:
+def live_containers() -> list[str]:
     rows = json.loads(modal("container", "list", "--app-id", app_id(), "--json").stdout)
-    gpu: list[str] = []
-    unknown: list[str] = []
-    for row in rows:
-        cid = row.get("container_id")
-        if not cid:
-            continue
-        cid = str(cid)
-        probe = modal("container", "exec", "--no-pty", cid, "--", "nvidia-smi", "-L", check=False)
-        text = probe.stdout + probe.stderr
-        if probe.returncode == 0:
-            if any(name.lower() in text.lower() for name in GPU_NAMES):
-                gpu.append(cid)
-            continue
-        recent = modal("container", "logs", cid, "--tail", "200", check=False)
-        log_text = recent.stdout + recent.stderr
-        if "[H3_STARTUP_TRACE]" in log_text or "[modal-h3] Launching ComfyUI" in log_text:
-            gpu.append(cid)
-        elif log_text.strip():
-            unknown.append(cid)
-    return gpu, unknown
+    return [str(row["container_id"]) for row in rows if row.get("container_id")]
 
 
 def stop_gpu() -> list[str]:
+    # During this benchmark, the deployed minimax-h3 app has only the long-lived
+    # RTX PRO 6000 web_server container. Provisioning is invoked separately.
     stopped: list[str] = []
     for _ in range(10):
-        gpu, unknown = classify_containers()
-        for cid in gpu:
+        live = live_containers()
+        if not live:
+            return stopped
+        for cid in live:
             modal("container", "stop", cid, "--yes")
             if cid not in stopped:
                 stopped.append(cid)
-        if not gpu and not unknown:
-            return stopped
-        if unknown and not gpu:
-            raise RuntimeError(f"Could not safely classify live containers: {unknown}")
         time.sleep(3)
-    raise RuntimeError("Could not prove that all RTX PRO 6000 containers stopped")
-
+    remaining = live_containers()
+    raise RuntimeError(f"Could not prove all app containers stopped: {remaining}")
 
 def wake(base: str) -> float:
     started = time.perf_counter()
@@ -101,10 +100,16 @@ def logs() -> str:
 
 
 def parse_trace(text: str) -> list[dict[str, object]]:
-    return [{"t_s": float(t), "phase": phase} for t, phase in TRACE.findall(text)]
+    latest: list[dict[str, object]] = []
+    for t, phase in TRACE.findall(text):
+        if phase == "container_entry":
+            latest = []
+        latest.append({"t_s": float(t), "phase": phase})
+    return latest
 
 
 def main() -> int:
+    configure_network()
     out = Path("logs")
     out.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -145,5 +150,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

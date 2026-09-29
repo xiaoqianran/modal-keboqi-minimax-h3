@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import tempfile
-import time
 import unittest
-from unittest.mock import Mock, patch
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from h3_runtime_cache import cache_namespace, file_revision, stage_caches, start_cache_sync, sync_caches
 from h3_app.jobs import JobCoordinator
+from h3_runtime_cache import ARCHIVE_NAME, cache_namespace, file_revision, stage_caches, start_cache_sync, sync_caches
 
 
 class RuntimeCacheTests(unittest.TestCase):
@@ -24,6 +23,21 @@ class RuntimeCacheTests(unittest.TestCase):
             path.write_bytes(b"two")
             self.assertNotEqual(first, file_revision(path))
 
+    def test_archive_stage_and_incremental_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            runtime = root / "runtime"
+            restored = root / "restored"
+            (runtime / "triton").mkdir(parents=True)
+            (runtime / "triton" / "kernel.bin").write_bytes(b"compiled")
+            changed = sync_caches(seed, runtime, ("triton",))
+            self.assertEqual(changed, ["triton"])
+            self.assertTrue((seed / ARCHIVE_NAME).is_file())
+            staged = stage_caches(seed, restored, ("triton",))
+            self.assertEqual(staged["triton"], 1)
+            self.assertEqual((restored / "triton" / "kernel.bin").read_bytes(), b"compiled")
+            self.assertEqual(sync_caches(seed, restored, ("triton",)), [])
 
     def test_background_sync_retries_after_commit_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -45,24 +59,6 @@ class RuntimeCacheTests(unittest.TestCase):
                 with JobCoordinator().run("owner", "h3"):
                     self.assertFalse(marker.exists())
                 self.assertTrue(marker.is_file())
-
-    def test_stage_and_incremental_sync(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            seed = root / "seed"
-            runtime = root / "runtime"
-            (seed / "triton").mkdir(parents=True)
-            (seed / "triton" / "kernel.bin").write_bytes(b"old")
-            staged = stage_caches(seed, runtime, ("triton",))
-            self.assertEqual(staged["triton"], 1)
-            self.assertEqual((runtime / "triton" / "kernel.bin").read_bytes(), b"old")
-
-            time.sleep(0.002)
-            (runtime / "triton" / "kernel.bin").write_bytes(b"new")
-            changed = sync_caches(seed, runtime, ("triton",))
-            self.assertEqual(changed, ["triton"])
-            self.assertEqual((seed / "triton" / "kernel.bin").read_bytes(), b"new")
-            self.assertTrue((seed / "triton" / ".runtime-cache-dirty").is_file())
 
 
 if __name__ == "__main__":

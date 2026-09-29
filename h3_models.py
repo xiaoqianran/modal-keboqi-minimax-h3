@@ -1327,23 +1327,42 @@ def sync_models(
         downloaded_keys: set[str] = set()
         download_failures: list[tuple[str, Exception]] = []
         if stale:
-            workers = max(1, min(download_workers, len(stale)))
+            # hf_hub_download shares one cache directory per repository. Running
+            # multiple files from the same repo concurrently races with our
+            # post-download cache pruning: one worker can remove blobs while a
+            # sibling is still creating its snapshot symlink. Serialize files
+            # within each repo while keeping different repos parallel.
+            repo_plans: dict[str, list[dict[str, Any]]] = {}
+            for plan in stale:
+                spec: ModelSpec = plan["spec"]
+                repo_plans.setdefault(spec.repo_id, []).append(plan)
+
+            def download_repo(plans: list[dict[str, Any]]) -> tuple[list[str], list[tuple[str, Exception]]]:
+                keys: list[str] = []
+                failures: list[tuple[str, Exception]] = []
+                for plan in plans:
+                    try:
+                        keys.append(_download_model(plan, token, log_prefix))
+                    except Exception as exc:
+                        failures.append((plan["key"], exc))
+                        break
+                return keys, failures
+
+            workers = max(1, min(download_workers, len(repo_plans)))
             print(
-                f"{log_prefix} downloading {len(stale)} model files "
-                f"with {workers} parallel workers",
+                f"{log_prefix} downloading {len(stale)} model files across "
+                f"{len(repo_plans)} repos with {workers} parallel workers",
                 flush=True,
             )
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
-                    pool.submit(_download_model, plan, token, log_prefix): plan
-                    for plan in stale
+                    pool.submit(download_repo, plans): repo_id
+                    for repo_id, plans in repo_plans.items()
                 }
                 for future in as_completed(futures):
-                    plan = futures[future]
-                    try:
-                        downloaded_keys.add(future.result())
-                    except Exception as exc:
-                        download_failures.append((plan["key"], exc))
+                    keys, failures = future.result()
+                    downloaded_keys.update(keys)
+                    download_failures.extend(failures)
 
         files_manifest = manifest.setdefault("files", {})
         for plan in plans:
