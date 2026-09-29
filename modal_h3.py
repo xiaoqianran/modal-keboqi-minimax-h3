@@ -60,15 +60,16 @@ LOGS = DATA / "logs"
 CONFIG = DATA / "h3_models.json"
 MANIFEST = DATA / "h3_model_manifest.json"
 MODEL_READY_MARKER = DATA / ".h3-preload-ready"
-RUNTIME_CACHE_ROOT = DATA / "runtime-cache"
+CACHE_DATA = PurePosixPath("/cache-seed")
 LOCAL_RUNTIME_CACHE_ROOT = PurePosixPath("/tmp/h3-runtime-cache")
-RUNTIME_CACHE_NAMES = ("triton", "torchinductor", "cuda-compute", "torch-extensions", "xdg")
+RUNTIME_CACHE_NAMES = ("triton", "torchinductor", "cuda-compute", "torch-extensions")
 
 COMFY_PORT = 8188
 UI_PORT = 7860
 
 APP = os.getenv("H3_MODAL_APP_NAME", "minimax-h3")
 VOL = os.getenv("H3_MODAL_VOLUME", "minimax-h3-data")
+CACHE_VOL = os.getenv("H3_MODAL_CACHE_VOLUME", "minimax-h3-runtime-cache")
 GPU = "RTX-PRO-6000"
 MIN_CONTAINERS = int(os.getenv("H3_MODAL_MIN_CONTAINERS", "0"))
 SCALEDOWN_WINDOW = int(
@@ -192,16 +193,6 @@ def _revision() -> str:
 
 REVISION = _revision()
 
-
-def _file_revision(path: Path) -> str:
-    if not IS_LOCAL or not path.is_file():
-        return "remote-import"
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-
-
-MODEL_RUNTIME_REVISION = _file_revision(LOCAL_SHARED_MODELS)
-ACCEL_RUNTIME_REVISION = _file_revision(LOCAL_ACCEL)
-ATTENTION_RUNTIME_REVISION = _file_revision(LOCAL_ATTENTION_HELPER)
 
 
 def _run(
@@ -679,6 +670,7 @@ if IS_LOCAL:
     image = image.add_local_dir(LOCAL / "h3_app", remote_path=(ROOT / "h3_app").as_posix(), copy=False)
 
 volume = modal.Volume.from_name(VOL, create_if_missing=True)
+cache_volume = modal.Volume.from_name(CACHE_VOL, create_if_missing=True)
 app = modal.App(APP, image=image)
 hf_secret = modal.Secret.from_name(
     HF_SECRET_NAME,
@@ -712,6 +704,7 @@ def layout() -> None:
 
 
 def _provision_unlocked() -> dict:
+    from h3_runtime_cache import file_revision
     from h3_models import (
         PRELOAD_MODEL_KEYS,
         sync_models,
@@ -736,8 +729,9 @@ def _provision_unlocked() -> dict:
         )
 
     write_json_atomic(Path(CONFIG), config)
+    model_revision = file_revision(Path(SHARED_MODELS))
     Path(MODEL_READY_MARKER).write_text(
-        json.dumps({"revision": MODEL_RUNTIME_REVISION, "checked_at": int(time.time())}) + "\n",
+        json.dumps({"revision": model_revision, "checked_at": int(time.time())}) + "\n",
         encoding="utf-8",
     )
     volume.commit()
@@ -751,6 +745,7 @@ def _provision_unlocked() -> dict:
 
 def _fast_model_config() -> dict | None:
     """Use already-provisioned preload files without a network metadata check."""
+    from h3_runtime_cache import file_revision
     from h3_models import validate_config_files
 
     marker = Path(MODEL_READY_MARKER)
@@ -759,7 +754,7 @@ def _fast_model_config() -> dict | None:
         return None
     try:
         state = json.loads(marker.read_text(encoding="utf-8"))
-        if state.get("revision") != MODEL_RUNTIME_REVISION:
+        if state.get("revision") != file_revision(Path(SHARED_MODELS)):
             return None
         checked_at = int(state.get("checked_at", 0))
         if MODEL_RECHECK_SECONDS >= 0 and time.time() - checked_at >= MODEL_RECHECK_SECONDS:
@@ -809,7 +804,7 @@ def service_env() -> dict[str, str]:
             "GRADIO_ANALYTICS_ENABLED": "False",
             "PYTHONUNBUFFERED": "1",
             "HF_HOME": "/tmp/hf",
-            "XDG_CACHE_HOME": (LOCAL_RUNTIME_CACHE_ROOT / "xdg").as_posix(),
+            "XDG_CACHE_HOME": "/tmp/cache",
             "TRITON_CACHE_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "triton").as_posix(),
             "TORCHINDUCTOR_CACHE_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "torchinductor").as_posix(),
             "CUDA_CACHE_PATH": (LOCAL_RUNTIME_CACHE_ROOT / "cuda-compute").as_posix(),
@@ -893,7 +888,7 @@ def provision_models():
     gpu=GPU,
     timeout=86400,
     startup_timeout=3600,
-    volumes={DATA.as_posix(): volume},
+    volumes={DATA.as_posix(): volume, CACHE_DATA.as_posix(): cache_volume},
     secrets=[hf_secret],
     min_containers=MIN_CONTAINERS,
     max_containers=1,
@@ -908,7 +903,13 @@ def provision_models():
     requires_proxy_auth=PROXY_AUTH,
 )
 def serve():
-    from h3_runtime_cache import cache_namespace, stage_caches, start_cache_sync, trace
+    from h3_runtime_cache import (
+        cache_namespace,
+        file_revision,
+        stage_caches,
+        start_cache_sync,
+        trace,
+    )
 
     started = time.perf_counter()
     trace(started, "container_entry", gpu=GPU)
@@ -931,10 +932,13 @@ def serve():
 
     cache_id = cache_namespace({
         "gpu": GPU,
-        "image": REVISION,
-        "models": MODEL_RUNTIME_REVISION,
-        "accel": ACCEL_RUNTIME_REVISION,
-        "attention": ATTENTION_RUNTIME_REVISION,
+        "models": file_revision(Path(SHARED_MODELS)),
+        "requirements": file_revision(Path(SHARED_REQUIREMENTS)),
+        "sources": file_revision(Path(SHARED_SOURCES)),
+        "node_patches": file_revision(Path(NODE_PATCHES)),
+        "cache_helper": file_revision(Path(RUNTIME_CACHE_HELPER)),
+        "accel": file_revision(Path(ACCEL_DEST)),
+        "attention": file_revision(Path(ATTENTION_HELPER)),
         "torch": TORCH_VERSION,
         "comfy": COMFY_REF,
         "sol": SOL_REF,
@@ -942,7 +946,7 @@ def serve():
         "spectrum": SPECTRUM_REF,
         "sage": SAGE_WHEEL_NAME,
     })
-    seed_root = Path(RUNTIME_CACHE_ROOT / cache_id)
+    seed_root = Path(CACHE_DATA / cache_id)
     runtime_root = Path(LOCAL_RUNTIME_CACHE_ROOT)
     trace(started, "runtime_cache_stage_start", namespace=cache_id)
     stage_caches(seed_root, runtime_root, RUNTIME_CACHE_NAMES)
@@ -1015,7 +1019,7 @@ def serve():
         f"[modal-h3] Public Gradio server is listening on port {UI_PORT}",
         flush=True,
     )
-    start_cache_sync(seed_root, runtime_root, RUNTIME_CACHE_NAMES, volume.commit)
+    start_cache_sync(seed_root, runtime_root, RUNTIME_CACHE_NAMES, cache_volume.commit)
     trace(started, "runtime_cache_sync_started", interval_s=300)
     try:
         wait_for_comfy_frontend(

@@ -3,9 +3,10 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
-from h3_runtime_cache import cache_namespace, stage_caches, sync_caches
+from h3_runtime_cache import cache_namespace, file_revision, stage_caches, start_cache_sync, sync_caches
 
 
 class RuntimeCacheTests(unittest.TestCase):
@@ -13,6 +14,28 @@ class RuntimeCacheTests(unittest.TestCase):
         left = cache_namespace({"gpu": "B300", "torch": "2.13", "ref": "a"})
         self.assertEqual(left, cache_namespace({"ref": "a", "torch": "2.13", "gpu": "B300"}))
         self.assertNotEqual(left, cache_namespace({"gpu": "B300", "torch": "2.13", "ref": "b"}))
+
+    def test_file_revision_tracks_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "code.py"
+            path.write_bytes(b"one")
+            first = file_revision(path)
+            path.write_bytes(b"two")
+            self.assertNotEqual(first, file_revision(path))
+
+
+    def test_background_sync_retries_after_commit_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            runtime = root / "runtime"
+            (runtime / "triton").mkdir(parents=True)
+            (runtime / "triton" / "kernel.bin").write_bytes(b"compiled")
+            commit = Mock(side_effect=[RuntimeError("temporary"), None])
+            with patch("h3_runtime_cache.time.sleep", side_effect=[None, SystemExit]):
+                thread = start_cache_sync(seed, runtime, ("triton",), commit, interval_s=30)
+                thread.join(2)
+            self.assertGreaterEqual(commit.call_count, 2)
 
     def test_stage_and_incremental_sync(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,6 +11,14 @@ from typing import Callable, Mapping
 DIRTY_MARKER = ".runtime-cache-dirty"
 
 
+def file_revision(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
 def cache_namespace(values: Mapping[str, object]) -> str:
     payload = json.dumps(dict(values), sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -98,19 +106,45 @@ def start_cache_sync(
     *,
     interval_s: int = 300,
 ) -> threading.Thread:
+    pending_commit = False
+
+    def persist(dirty: tuple[str, ...]) -> bool:
+        nonlocal pending_commit
+        try:
+            changed = sync_caches(seed_root, runtime_root, dirty) if dirty else []
+        except Exception as exc:
+            print(f"[H3_CACHE_SYNC_ERROR] stage=copy error={exc!r}", flush=True)
+            return False
+
+        pending_commit = pending_commit or bool(changed)
+        if not pending_commit:
+            return True
+        try:
+            commit()
+        except Exception as exc:
+            print(f"[H3_CACHE_SYNC_ERROR] stage=commit error={exc!r}", flush=True)
+            return False
+        pending_commit = False
+        names_text = ",".join(changed) if changed else "pending"
+        print(f"[H3_CACHE_COMMIT] names={names_text}", flush=True)
+        return True
+
     def worker() -> None:
-        previous = {name: _fingerprint(runtime_root / name) for name in names}
+        # Capture kernels compiled during ComfyUI startup before establishing the
+        # periodic baseline. The first sync runs in this daemon thread so it does
+        # not delay the public readiness path.
+        initial_ok = persist(names)
+        previous = (
+            {name: _fingerprint(runtime_root / name) for name in names}
+            if initial_ok
+            else {name: () for name in names}
+        )
         while True:
             time.sleep(max(30, interval_s))
             current = {name: _fingerprint(runtime_root / name) for name in names}
             dirty = tuple(name for name in names if current[name] != previous[name])
-            if not dirty:
-                continue
-            changed = sync_caches(seed_root, runtime_root, dirty)
-            if changed:
-                commit()
-                print(f"[H3_CACHE_COMMIT] names={','.join(changed)}", flush=True)
-            previous.update({name: current[name] for name in dirty})
+            if persist(dirty):
+                previous.update({name: current[name] for name in dirty})
 
     thread = threading.Thread(target=worker, name="h3-runtime-cache-sync", daemon=True)
     thread.start()
