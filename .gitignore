@@ -21,3 +21,6 @@ gradio_outputs/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+
+# Local benchmark output
+logs/
