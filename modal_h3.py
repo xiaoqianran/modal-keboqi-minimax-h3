@@ -809,6 +809,7 @@ def service_env() -> dict[str, str]:
             "TORCHINDUCTOR_CACHE_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "torchinductor").as_posix(),
             "CUDA_CACHE_PATH": (LOCAL_RUNTIME_CACHE_ROOT / "cuda-compute").as_posix(),
             "TORCH_EXTENSIONS_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "torch-extensions").as_posix(),
+            "H3_RUNTIME_CACHE_DIRTY_MARKER": (LOCAL_RUNTIME_CACHE_ROOT / ".runtime-cache-sync-needed").as_posix(),
         }
     )
     return env
@@ -1020,7 +1021,7 @@ def serve():
         flush=True,
     )
     start_cache_sync(seed_root, runtime_root, RUNTIME_CACHE_NAMES, cache_volume.commit)
-    trace(started, "runtime_cache_sync_started", interval_s=300)
+    trace(started, "runtime_cache_sync_started", interval_s=30)
     try:
         wait_for_comfy_frontend(
             f"http://127.0.0.1:{UI_PORT}/comfyui/",

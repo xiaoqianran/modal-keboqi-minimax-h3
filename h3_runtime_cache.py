@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import os
 import shutil
 import threading
 import time
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 DIRTY_MARKER = ".runtime-cache-dirty"
+DIRTY_SIGNAL = ".runtime-cache-sync-needed"
 
 
 def file_revision(path: Path) -> str:
@@ -27,22 +30,6 @@ def cache_namespace(values: Mapping[str, object]) -> str:
 def trace(started: float, phase: str, **fields: object) -> None:
     suffix = " ".join(f"{key}={value}" for key, value in fields.items())
     print(f"[H3_STARTUP_TRACE] t={time.perf_counter() - started:.3f}s phase={phase}" + (f" {suffix}" if suffix else ""), flush=True)
-
-
-def _fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:
-    if not root.exists():
-        return ()
-    records: list[tuple[str, int, int]] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or path.name == DIRTY_MARKER:
-            continue
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        records.append((path.relative_to(root).as_posix(), stat.st_size, stat.st_mtime_ns))
-    records.sort()
-    return tuple(records)
 
 
 def _copy_tree(source: Path, destination: Path) -> tuple[int, int]:
@@ -86,16 +73,32 @@ def sync_caches(seed_root: Path, runtime_root: Path, names: tuple[str, ...]) -> 
     for name in names:
         runtime = runtime_root / name
         seed = seed_root / name
-        before = _fingerprint(seed)
         started = time.perf_counter()
         files, total_bytes = _copy_tree(runtime, seed)
-        after = _fingerprint(seed)
-        if before != after:
+        if files:
             seed.mkdir(parents=True, exist_ok=True)
             (seed / DIRTY_MARKER).write_text("1\n", encoding="utf-8")
             changed.append(name)
-        print(f"[H3_CACHE_SYNC] name={name} files={files} bytes={total_bytes} changed={str(before != after).lower()} elapsed_s={time.perf_counter() - started:.3f}", flush=True)
+        print(f"[H3_CACHE_SYNC] name={name} files={files} bytes={total_bytes} changed={str(bool(files)).lower()} elapsed_s={time.perf_counter() - started:.3f}", flush=True)
     return changed
+
+
+def mark_cache_dirty(runtime_root: Path) -> None:
+    root = Path(runtime_root)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / DIRTY_SIGNAL).touch()
+
+
+def mark_cache_dirty_from_env() -> None:
+    marker = os.getenv("H3_RUNTIME_CACHE_DIRTY_MARKER", "").strip()
+    if not marker:
+        return
+    try:
+        path = Path(marker)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except OSError:
+        pass
 
 
 def start_cache_sync(
@@ -104,48 +107,50 @@ def start_cache_sync(
     names: tuple[str, ...],
     commit: Callable[[], None],
     *,
-    interval_s: int = 300,
+    interval_s: int = 30,
 ) -> threading.Thread:
+    seed_root = Path(seed_root)
+    runtime_root = Path(runtime_root)
+    signal = runtime_root / DIRTY_SIGNAL
+    lock = threading.Lock()
     pending_commit = False
 
-    def persist(dirty: tuple[str, ...]) -> bool:
+    def persist(*, force: bool = False) -> bool:
         nonlocal pending_commit
-        try:
-            changed = sync_caches(seed_root, runtime_root, dirty) if dirty else []
-        except Exception as exc:
-            print(f"[H3_CACHE_SYNC_ERROR] stage=copy error={exc!r}", flush=True)
-            return False
-
-        pending_commit = pending_commit or bool(changed)
-        if not pending_commit:
+        if not force and not signal.exists() and not pending_commit:
             return True
-        try:
-            commit()
-        except Exception as exc:
-            print(f"[H3_CACHE_SYNC_ERROR] stage=commit error={exc!r}", flush=True)
-            return False
-        pending_commit = False
-        names_text = ",".join(changed) if changed else "pending"
-        print(f"[H3_CACHE_COMMIT] names={names_text}", flush=True)
-        return True
+        with lock:
+            try:
+                changed = sync_caches(seed_root, runtime_root, names)
+            except Exception as exc:
+                print(f"[H3_CACHE_SYNC_ERROR] stage=copy error={exc!r}", flush=True)
+                return False
+            pending_commit = pending_commit or bool(changed)
+            if pending_commit:
+                try:
+                    commit()
+                except Exception as exc:
+                    print(f"[H3_CACHE_SYNC_ERROR] stage=commit error={exc!r}", flush=True)
+                    return False
+                pending_commit = False
+                print(f"[H3_CACHE_COMMIT] names={','.join(changed) if changed else 'pending'}", flush=True)
+            signal.unlink(missing_ok=True)
+            return True
 
     def worker() -> None:
-        # Capture kernels compiled during ComfyUI startup before establishing the
-        # periodic baseline. The first sync runs in this daemon thread so it does
-        # not delay the public readiness path.
-        initial_ok = persist(names)
-        previous = (
-            {name: _fingerprint(runtime_root / name) for name in names}
-            if initial_ok
-            else {name: () for name in names}
-        )
+        # Capture kernels compiled during ComfyUI startup once, then stay O(1)
+        # while idle. GPU jobs touch DIRTY_SIGNAL when they release the GPU.
+        persist(force=True)
         while True:
-            time.sleep(max(30, interval_s))
-            current = {name: _fingerprint(runtime_root / name) for name in names}
-            dirty = tuple(name for name in names if current[name] != previous[name])
-            if persist(dirty):
-                previous.update({name: current[name] for name in dirty})
+            time.sleep(max(5, interval_s))
+            persist()
 
+    def flush_on_exit() -> None:
+        # Best effort only; Modal may still terminate a container abruptly.
+        if runtime_root.exists():
+            persist(force=True)
+
+    atexit.register(flush_on_exit)
     thread = threading.Thread(target=worker, name="h3-runtime-cache-sync", daemon=True)
     thread.start()
     return thread

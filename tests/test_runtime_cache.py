@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from pathlib import Path
 
 from h3_runtime_cache import cache_namespace, file_revision, stage_caches, start_cache_sync, sync_caches
+from h3_app.jobs import JobCoordinator
 
 
 class RuntimeCacheTests(unittest.TestCase):
@@ -36,6 +37,14 @@ class RuntimeCacheTests(unittest.TestCase):
                 thread = start_cache_sync(seed, runtime, ("triton",), commit, interval_s=30)
                 thread.join(2)
             self.assertGreaterEqual(commit.call_count, 2)
+
+    def test_gpu_job_marks_runtime_cache_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "cache" / ".runtime-cache-sync-needed"
+            with patch.dict("os.environ", {"H3_RUNTIME_CACHE_DIRTY_MARKER": str(marker)}):
+                with JobCoordinator().run("owner", "h3"):
+                    self.assertFalse(marker.exists())
+                self.assertTrue(marker.is_file())
 
     def test_stage_and_incremental_sync(self):
         with tempfile.TemporaryDirectory() as tmp:

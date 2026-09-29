@@ -205,7 +205,8 @@ class UiContractTests(unittest.TestCase):
         self.assertEqual(
             [self.components[node["id"]]["props"]["label"] for node in tab_nodes],
             [
-                "MiniMax H3",
+                "Create",
+                "Batch Studio",
                 "Qwen Image 2.1",
                 "LTX 2.5",
                 "MiniMax Music 3",
@@ -216,7 +217,7 @@ class UiContractTests(unittest.TestCase):
         )
         self.assertEqual(
             [self.components[node["children"][0]["id"]]["type"] for node in tab_nodes],
-            ["row", "group", "group", "group", "group", "group", "group"],
+            ["row", "html", "group", "group", "group", "group", "group", "group"],
         )
 
     def test_non_h3_generated_media_outputs_are_display_only(self) -> None:

@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from threading import Event, Lock, RLock
 from typing import Any, Callable
 
+from h3_runtime_cache import mark_cache_dirty_from_env
+
+
+
+
 
 class JobCancelled(RuntimeError):
     pass
@@ -55,6 +60,7 @@ class JobCoordinator:
                     for submission in job.submissions:
                         submission.close()
                     job.has_gpu = False
+                    mark_cache_dirty_from_env()
         finally:
             with self.lock:
                 self.active.pop(job.id, None)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,8 @@ from fastapi.responses import (
 )
 
 from starlette.middleware.gzip import GZipMiddleware
+
+from h3_runtime_cache import mark_cache_dirty_from_env
 
 COMFY_PROXY_PATH = "/comfyui"
 
@@ -163,6 +166,13 @@ async def _relay_comfy_websocket(
     async def comfy_to_browser() -> None:
         async for message in upstream:
             if message.type == aiohttp.WSMsgType.TEXT:
+                try:
+                    event = json.loads(message.data)
+                    data = event.get("data", {}) if isinstance(event, dict) else {}
+                    if event.get("type") == "executing" and data.get("node") is None:
+                        mark_cache_dirty_from_env()
+                except (json.JSONDecodeError, AttributeError):
+                    pass
                 await socket.send_text(message.data)
             elif message.type == aiohttp.WSMsgType.BINARY:
                 await socket.send_bytes(message.data)
