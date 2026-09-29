@@ -33,6 +33,7 @@ PROMPT_MUSIC3 = ROOT / "prompt_music3.txt"
 PROMPT_LTX25 = ROOT / "prompt_ltx25.txt"
 PROMPT_QWEN_IMAGE21 = ROOT / "prompt_qwen_image21.txt"
 PROMPT_YUE2 = ROOT / "prompt_yue2.txt"
+RUNTIME_CACHE_HELPER = ROOT / "h3_runtime_cache.py"
 ACCEL_DEST = COMFY / "custom_nodes" / "H3Acceleration" / "__init__.py"
 
 LOCAL_UI = LOCAL / "gradio_app.py"
@@ -49,6 +50,7 @@ LOCAL_PROMPT_MUSIC3 = LOCAL / "prompt_music3.txt"
 LOCAL_PROMPT_LTX25 = LOCAL / "prompt_ltx25.txt"
 LOCAL_PROMPT_QWEN_IMAGE21 = LOCAL / "prompt_qwen_image21.txt"
 LOCAL_PROMPT_YUE2 = LOCAL / "prompt_yue2.txt"
+LOCAL_RUNTIME_CACHE_HELPER = LOCAL / "h3_runtime_cache.py"
 
 DATA = PurePosixPath("/data")
 MODELS = DATA / "models"
@@ -57,6 +59,10 @@ OUTPUT = DATA / "output"
 LOGS = DATA / "logs"
 CONFIG = DATA / "h3_models.json"
 MANIFEST = DATA / "h3_model_manifest.json"
+MODEL_READY_MARKER = DATA / ".h3-preload-ready"
+RUNTIME_CACHE_ROOT = DATA / "runtime-cache"
+LOCAL_RUNTIME_CACHE_ROOT = PurePosixPath("/tmp/h3-runtime-cache")
+RUNTIME_CACHE_NAMES = ("triton", "torchinductor", "cuda-compute", "torch-extensions", "xdg")
 
 COMFY_PORT = 8188
 UI_PORT = 7860
@@ -68,6 +74,7 @@ MIN_CONTAINERS = int(os.getenv("H3_MODAL_MIN_CONTAINERS", "0"))
 SCALEDOWN_WINDOW = int(
     os.getenv("H3_MODAL_SCALEDOWN_WINDOW", "1200")
 )
+MODEL_RECHECK_SECONDS = int(os.getenv("H3_MODAL_MODEL_RECHECK_SECONDS", "21600"))
 PROXY_AUTH = os.getenv("H3_MODAL_PROXY_AUTH", "0") != "0"
 HF_SECRET_NAME = os.getenv("H3_MODAL_HF_SECRET", "custom-secret")
 
@@ -156,6 +163,7 @@ _RUNTIME_LOCAL_MOUNTS = (
     (LOCAL_PROMPT_LTX25, PROMPT_LTX25),
     (LOCAL_PROMPT_QWEN_IMAGE21, PROMPT_QWEN_IMAGE21),
     (LOCAL_PROMPT_YUE2, PROMPT_YUE2),
+    (LOCAL_RUNTIME_CACHE_HELPER, RUNTIME_CACHE_HELPER),
 )
 _BUILD_LOCAL_FILES = tuple(local for local, _ in _BUILD_LOCAL_MOUNTS)
 _RUNTIME_LOCAL_FILES = tuple(local for local, _ in _RUNTIME_LOCAL_MOUNTS)
@@ -183,6 +191,17 @@ def _revision() -> str:
 
 
 REVISION = _revision()
+
+
+def _file_revision(path: Path) -> str:
+    if not IS_LOCAL or not path.is_file():
+        return "remote-import"
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+MODEL_RUNTIME_REVISION = _file_revision(LOCAL_SHARED_MODELS)
+ACCEL_RUNTIME_REVISION = _file_revision(LOCAL_ACCEL)
+ATTENTION_RUNTIME_REVISION = _file_revision(LOCAL_ATTENTION_HELPER)
 
 
 def _run(
@@ -717,12 +736,43 @@ def _provision_unlocked() -> dict:
         )
 
     write_json_atomic(Path(CONFIG), config)
+    Path(MODEL_READY_MARKER).write_text(
+        json.dumps({"revision": MODEL_RUNTIME_REVISION, "checked_at": int(time.time())}) + "\n",
+        encoding="utf-8",
+    )
     volume.commit()
 
     print(
         "[modal-h3] Model provisioning and remote version check complete",
         flush=True,
     )
+    return config
+
+
+def _fast_model_config() -> dict | None:
+    """Use already-provisioned preload files without a network metadata check."""
+    from h3_models import validate_config_files
+
+    marker = Path(MODEL_READY_MARKER)
+    config_path = Path(CONFIG)
+    if not marker.is_file() or not config_path.is_file():
+        return None
+    try:
+        state = json.loads(marker.read_text(encoding="utf-8"))
+        if state.get("revision") != MODEL_RUNTIME_REVISION:
+            return None
+        checked_at = int(state.get("checked_at", 0))
+        if MODEL_RECHECK_SECONDS >= 0 and time.time() - checked_at >= MODEL_RECHECK_SECONDS:
+            print("[modal-h3] Model metadata TTL expired; refreshing remote inventory", flush=True)
+            return None
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    missing = validate_config_files(Path(MODELS), config)
+    if missing:
+        print("[modal-h3] Fast model validation miss: " + ", ".join(missing), flush=True)
+        return None
+    print("[modal-h3] Fast model validation hit; skipping remote metadata check", flush=True)
     return config
 
 
@@ -759,7 +809,11 @@ def service_env() -> dict[str, str]:
             "GRADIO_ANALYTICS_ENABLED": "False",
             "PYTHONUNBUFFERED": "1",
             "HF_HOME": "/tmp/hf",
-            "XDG_CACHE_HOME": "/tmp/cache",
+            "XDG_CACHE_HOME": (LOCAL_RUNTIME_CACHE_ROOT / "xdg").as_posix(),
+            "TRITON_CACHE_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "triton").as_posix(),
+            "TORCHINDUCTOR_CACHE_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "torchinductor").as_posix(),
+            "CUDA_CACHE_PATH": (LOCAL_RUNTIME_CACHE_ROOT / "cuda-compute").as_posix(),
+            "TORCH_EXTENSIONS_DIR": (LOCAL_RUNTIME_CACHE_ROOT / "torch-extensions").as_posix(),
         }
     )
     return env
@@ -854,13 +908,45 @@ def provision_models():
     requires_proxy_auth=PROXY_AUTH,
 )
 def serve():
+    from h3_runtime_cache import cache_namespace, stage_caches, start_cache_sync, trace
+
+    started = time.perf_counter()
+    trace(started, "container_entry", gpu=GPU)
     print("[modal-h3] Starting MiniMax H3 service", flush=True)
     print(
         "[modal-h3] Hugging Face token injected: "
         + ("yes" if os.getenv("HF_TOKEN") else "no"),
         flush=True,
     )
-    provision()
+
+    layout()
+    trace(started, "model_validation_start")
+    config = _fast_model_config()
+    if config is None:
+        trace(started, "model_provision_start")
+        config = provision()
+        trace(started, "model_provision_done")
+    else:
+        trace(started, "model_validation_hit")
+
+    cache_id = cache_namespace({
+        "gpu": GPU,
+        "image": REVISION,
+        "models": MODEL_RUNTIME_REVISION,
+        "accel": ACCEL_RUNTIME_REVISION,
+        "attention": ATTENTION_RUNTIME_REVISION,
+        "torch": TORCH_VERSION,
+        "comfy": COMFY_REF,
+        "sol": SOL_REF,
+        "sla": SLA_REF,
+        "spectrum": SPECTRUM_REF,
+        "sage": SAGE_WHEEL_NAME,
+    })
+    seed_root = Path(RUNTIME_CACHE_ROOT / cache_id)
+    runtime_root = Path(LOCAL_RUNTIME_CACHE_ROOT)
+    trace(started, "runtime_cache_stage_start", namespace=cache_id)
+    stage_caches(seed_root, runtime_root, RUNTIME_CACHE_NAMES)
+    trace(started, "runtime_cache_stage_done", namespace=cache_id)
 
     # User workflow files live in the image filesystem rather than the model
     # volume. Re-sync them on every cold start so a reused image layer can never
@@ -898,6 +984,7 @@ def serve():
     print("[modal-h3] Dense/fallback attention: Comfy Kitchen", flush=True)
     comfy_args += ["--enable-cors-header", "*"]
 
+    trace(started, "comfy_spawn")
     print("[modal-h3] Launching ComfyUI", flush=True)
     comfy_process = subprocess.Popen(
         comfy_args,
@@ -910,7 +997,9 @@ def serve():
         timeout=20 * 60,
         label="ComfyUI",
     )
+    trace(started, "comfy_ready")
     print("[modal-h3] Launching Gradio", flush=True)
+    trace(started, "gradio_spawn")
     gradio_process = subprocess.Popen(
         ["python", "-u", UI.as_posix()],
         env=env,
@@ -921,10 +1010,13 @@ def serve():
         timeout=10 * 60,
         label="Gradio",
     )
+    trace(started, "gradio_ready")
     print(
         f"[modal-h3] Public Gradio server is listening on port {UI_PORT}",
         flush=True,
     )
+    start_cache_sync(seed_root, runtime_root, RUNTIME_CACHE_NAMES, volume.commit)
+    trace(started, "runtime_cache_sync_started", interval_s=300)
     try:
         wait_for_comfy_frontend(
             f"http://127.0.0.1:{UI_PORT}/comfyui/",
@@ -938,6 +1030,7 @@ def serve():
             f"/comfyui asset validation failed: {exc}",
             flush=True,
         )
+    trace(started, "service_ready")
 
 
 @app.local_entrypoint()
