@@ -59,11 +59,19 @@ def _update_value(value: Any) -> Any:
     return value
 
 
-def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any]:
+def _gallery_payload(
+    request: gr.Request,
+    *,
+    message: str = "",
+    limit: int = 48,
+) -> dict[str, Any]:
     import gradio_app as legacy
 
+    safe_limit = max(1, int(limit or 48))
+    videos = legacy.gallery_video_paths(limit=None)
+    shown = videos[:safe_limit]
     items: list[dict[str, Any]] = []
-    for video in legacy.gallery_video_paths():
+    for video in shown:
         try:
             stat = video.stat()
         except OSError:
@@ -84,7 +92,15 @@ def _gallery_payload(request: gr.Request, *, message: str = "") -> dict[str, Any
                 "snapshot": snapshot,
             }
         )
-    return {"message": message, "count": len(items), "items": items}
+    total = len(videos)
+    return {
+        "message": message,
+        "count": len(items),
+        "shown": len(items),
+        "total": total,
+        "has_more": len(items) < total,
+        "items": items,
+    }
 
 
 def studio_catalog() -> dict[str, Any]:
@@ -236,15 +252,19 @@ def studio_gallery_cancel(request: gr.Request) -> dict[str, str]:
     return _cancel_family(request, "gallery")
 
 
-def studio_gallery_list(request: gr.Request) -> dict[str, Any]:
-    return _gallery_payload(request)
+def studio_gallery_list(limit: int, request: gr.Request) -> dict[str, Any]:
+    return _gallery_payload(request, limit=limit)
 
 
-def studio_gallery_delete(selected_video: str, request: gr.Request) -> dict[str, Any]:
+def studio_gallery_delete(
+    selected_video: str,
+    limit: int,
+    request: gr.Request,
+) -> dict[str, Any]:
     import gradio_app as legacy
     result = legacy.delete_selected_gallery_video(selected_video, True)
     message = str(result[2]) if len(result) > 2 else "Output deleted."
-    return _gallery_payload(request, message=message)
+    return _gallery_payload(request, message=message, limit=limit)
 
 
 def studio_gallery_empty(request: gr.Request) -> dict[str, Any]:
@@ -331,6 +351,7 @@ def build_studio_api() -> None:
         prompts = gr.Textbox()
         batch_id = gr.Textbox()
         gallery_video = gr.Textbox()
+        gallery_limit = gr.Number(value=48, precision=0)
         gallery_upload = gr.Video()
         gallery_option = gr.Textbox()
         gallery_seed = gr.Number()
@@ -354,8 +375,8 @@ def build_studio_api() -> None:
         gr.Button(visible=False).click(studio_ltx_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_ltx_cancel")
         gr.Button(visible=False).click(studio_music_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_music_cancel")
         gr.Button(visible=False).click(studio_gallery_cancel, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_cancel")
-        gr.Button(visible=False).click(studio_gallery_list, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_list")
-        gr.Button(visible=False).click(studio_gallery_delete, inputs=gallery_video, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_delete")
+        gr.Button(visible=False).click(studio_gallery_list, inputs=gallery_limit, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_list")
+        gr.Button(visible=False).click(studio_gallery_delete, inputs=[gallery_video, gallery_limit], outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_delete")
         gr.Button(visible=False).click(studio_gallery_empty, outputs=payload, queue=False, show_progress="hidden", api_name="studio_gallery_empty")
         gr.Button(visible=False).click(studio_gallery_import, inputs=gallery_upload, outputs=payload, concurrency_id="h3-gpu", concurrency_limit=1, show_progress="minimal", api_name="studio_gallery_import")
         gr.Button(visible=False).click(

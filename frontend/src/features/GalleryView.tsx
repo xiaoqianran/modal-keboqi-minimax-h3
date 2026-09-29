@@ -42,12 +42,13 @@ function snapshotJson(item: GalleryItem | null): string {
 export function GalleryView() {
   const queryClient = useQueryClient();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [galleryLimit, setGalleryLimit] = useState(48);
   const catalogQuery = useQuery({ queryKey: ["studio-catalog"], queryFn: studioCatalog, staleTime: 60_000 });
   const galleryCatalog = catalogQuery.data?.gallery;
 
   const galleryQuery = useQuery({
-    queryKey: ["gallery"],
-    queryFn: gallerySnapshot,
+    queryKey: ["gallery", galleryLimit],
+    queryFn: () => gallerySnapshot(galleryLimit),
     refetchInterval: 5000,
   });
 
@@ -73,9 +74,9 @@ export function GalleryView() {
   }, [galleryCatalog]);
 
   const deleteMutation = useMutation({
-    mutationFn: deleteGalleryItem,
+    mutationFn: (path: string) => deleteGalleryItem(path, galleryLimit),
     onSuccess: (data) => {
-      queryClient.setQueryData(["gallery"], data);
+      queryClient.setQueryData(["gallery", galleryLimit], data);
       setSelectedPath((current) =>
         current && data.items.some((item) => item.path === current)
           ? current
@@ -87,7 +88,7 @@ export function GalleryView() {
   const emptyMutation = useMutation({
     mutationFn: emptyGallery,
     onSuccess: (data) => {
-      queryClient.setQueryData(["gallery"], data);
+      queryClient.setQueryData(["gallery", galleryLimit], data);
       setSelectedPath(null);
     },
   });
@@ -173,7 +174,7 @@ export function GalleryView() {
         <div className="section-heading gallery-heading-row">
           <div><span className="eyebrow">Output workspace</span><h2>Generated videos</h2></div>
           <div className="gallery-toolbar-actions">
-            <span className="badge">{items.length} output{items.length === 1 ? "" : "s"}</span>
+            <span className="badge">{galleryQuery.data ? `${galleryQuery.data.shown} / ${galleryQuery.data.total}` : items.length} outputs</span>
             <button className="secondary-button" disabled={galleryQuery.isFetching} onClick={() => galleryQuery.refetch()}>{galleryQuery.isFetching ? "Refreshing…" : "Refresh"}</button>
             <button className="danger-button gallery-empty-button" disabled={!items.length || emptyMutation.isPending || postRunning} onClick={removeAll}>Empty gallery</button>
           </div>
@@ -198,6 +199,13 @@ export function GalleryView() {
               <div className="empty-state gallery-list-empty"><strong>No generated videos yet</strong><span>Create a video or finish a batch and it will appear here automatically.</span></div>
             )}
           </div>
+          {galleryQuery.data?.has_more && (
+            <div className="button-row">
+              <button className="secondary-button" disabled={galleryQuery.isFetching} onClick={() => setGalleryLimit((current) => current + 48)}>
+                Show more
+              </button>
+            </div>
+          )}
         </section>
 
         <section className="panel gallery-preview-panel">

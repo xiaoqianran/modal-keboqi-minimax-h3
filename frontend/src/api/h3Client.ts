@@ -621,14 +621,14 @@ export async function cancelBatch(batchId: string): Promise<BatchSnapshot> {
   return parseJsonResult<BatchSnapshot>(await client.predict("/studio_batch_cancel", [batchId]));
 }
 
-export async function gallerySnapshot(): Promise<GallerySnapshot> {
+export async function gallerySnapshot(limit = 48): Promise<GallerySnapshot> {
   const client = await getClient();
-  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_list", [])));
+  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_list", [limit])));
 }
 
-export async function deleteGalleryItem(path: string): Promise<GallerySnapshot> {
+export async function deleteGalleryItem(path: string, limit = 48): Promise<GallerySnapshot> {
   const client = await getClient();
-  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_delete", [path])));
+  return normalizeGallery(parseJsonResult<GallerySnapshot>(await client.predict("/studio_gallery_delete", [path, limit])));
 }
 
 export async function emptyGallery(): Promise<GallerySnapshot> {

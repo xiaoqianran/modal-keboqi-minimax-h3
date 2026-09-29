@@ -284,6 +284,9 @@ export interface GalleryItem {
 export interface GallerySnapshot {
   message?: string;
   count: number;
+  shown: number;
+  total: number;
+  has_more: boolean;
   items: GalleryItem[];
 }
 
